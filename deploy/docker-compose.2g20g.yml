@@ -1,0 +1,61 @@
+# 针对 2GB RAM / 20GB SSD 轻量海外 VPS 调优的生产编排文件
+# 使用方法：cp deploy/docker-compose.2g20g.yml docker-compose.yml（或直接运行 bash deploy/setup_vps_2g20g.sh）
+name: colab-gpu-studio
+x-studio: &studio
+  image: colab-gpu-studio:0.3.0
+  build: .
+  env_file: .env
+  environment:
+    DATABASE_URL: sqlite:////data/studio.db
+    DATA_DIR: /data
+  volumes: [studio-data:/data]
+  restart: unless-stopped
+  pids_limit: 128
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  # 限制容器日志上限（3 * 10MB = 单容器最多 30MB），防止 20GB 硬盘被运行日志写满
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *studio
+    mem_limit: 640m
+    environment:
+      DATABASE_URL: sqlite:////data/studio.db
+      DATA_DIR: /data
+      # 信任本机与当前 Docker 网桥子网转发的 X-Forwarded-For / X-Forwarded-Proto，避免反代下误触发共享 IP 登录限流
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1,::1,10.231.88.0/24}"
+    ports: ["${BIND_IP:-127.0.0.1}:${BIND_PORT:-8788}:8788"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8788/api/health',timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    <<: *studio
+    # 跑 MiniMax H3 视频拉取分块并流式同步 Google Drive 时 384m 偏紧，调至 640m 兼顾 2G 物理内存安全余量
+    mem_limit: 640m
+    command: [python, -m, app.worker, worker]
+    depends_on:
+      api: {condition: service_healthy}
+
+  watchdog:
+    <<: *studio
+    mem_limit: 256m
+    command: [python, -m, app.worker, watchdog, --interval, '5']
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  studio-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${STUDIO_SUBNET:-10.231.88.0/24}

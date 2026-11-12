@@ -156,7 +156,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const token = sessionToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  const timeout = window.setTimeout(() => controller.abort(), 45000);
   const abortParent = () => controller.abort();
   init.signal?.addEventListener('abort', abortParent, { once: true });
   let response: Response;
@@ -324,11 +324,12 @@ export async function uploadAsset(projectId: string, file: File, onProgress?: (p
   const body = new FormData(); body.append('project_id', projectId); body.append('file', file);
   const token = sessionToken();
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest(); xhr.open('POST', `${API_BASE}/api/assets`); xhr.withCredentials = true;
+    const xhr = new XMLHttpRequest(); xhr.open('POST', `${API_BASE}/api/assets`); xhr.withCredentials = true; xhr.timeout = 180000;
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress?.(Math.round(event.loaded / event.total * 100)); };
-    xhr.onload = () => { let data: unknown; try { data = JSON.parse(xhr.responseText); } catch { reject(new ApiError('上传服务响应异常')); return; } if (xhr.status >= 200 && xhr.status < 300) { try { resolve(unwrapGpuResponse<GalleryAsset>(data as ApiEnvelope<GalleryAsset> | GalleryAsset)); } catch (error) { reject(error); } } else reject(new ApiError('素材上传失败', xhr.status)); };
+    xhr.onload = () => { let data: unknown; try { data = JSON.parse(xhr.responseText); } catch { reject(new ApiError('上传服务响应异常')); return; } if (xhr.status >= 200 && xhr.status < 300) { try { resolve(unwrapGpuResponse<GalleryAsset>(data as ApiEnvelope<GalleryAsset> | GalleryAsset)); } catch (error) { reject(error); } } else { if (xhr.status === 401) logout(); const payload = isRecord(data) ? data : {}; const err = isRecord(payload.error) ? payload.error : payload; reject(new ApiError(String(err.message || '素材上传失败'), xhr.status, String(err.code || 'UPLOAD_FAILED'))); } };
     xhr.onerror = () => reject(new ApiError('网络中断，请检查素材列表后重试'));
+    xhr.ontimeout = () => reject(new ApiError('素材上传超时，请检查网络或压缩素材后重试', 0, 'UPLOAD_TIMEOUT'));
     xhr.send(body);
   });
 }

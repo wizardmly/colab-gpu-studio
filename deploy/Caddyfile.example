@@ -1,0 +1,11 @@
+# 复制到 /etc/caddy/Caddyfile 后把 studio.example.com 替换为你自己的域名，再执行 systemctl reload caddy
+studio.example.com {
+    encode zstd gzip
+
+    # 匹配后端 100 MiB 素材与参考视频上传上限
+    request_body {
+        max_size 110MB
+    }
+
+    reverse_proxy 127.0.0.1:8788
+}

@@ -2,7 +2,7 @@
 # 使用方法：cp deploy/docker-compose.2g20g.yml docker-compose.yml（或直接运行 bash deploy/setup_vps_2g20g.sh）
 name: colab-gpu-studio
 x-studio: &studio
-  image: colab-gpu-studio:0.3.0
+  image: colab-gpu-studio:${STUDIO_IMAGE_TAG:-local}
   build: .
   env_file: .env
   environment:

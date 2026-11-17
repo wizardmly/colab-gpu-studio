@@ -563,6 +563,7 @@ export default function App() {
           provider: runtime,
           max_runtime_minutes: maxRuntime,
           allocation: decision.allocation,
+          gpu_selection: runtimeChoice.gpuSelection || 'workflow',
           account_id: decision.accountId,
           instance_id: decision.instanceId,
           lifecycle: runtimeChoice.lifecycle,
@@ -992,6 +993,7 @@ export default function App() {
               <dt>工作流</dt><dd>{activeWorkflow.workflow_key} · v{activeWorkflow.workflow_version}</dd>
               <dt>运行方式</dt><dd>{runtime === 'colab' ? 'Colab GPU（会扣 CU）' : '离线模拟（不扣 CU）'}</dd>
               <dt>机器</dt><dd>{resolveInstanceSubmission(runtimeChoice, instances).machineLabel}</dd>
+              {runtime === 'colab' && !runtimeChoice.instanceId && <><dt>GPU 配置</dt><dd>{runtimeChoice.gpuSelection === 'auto' ? '不指定，按机器列表自动尝试' : '工作流默认配置'}</dd></>}
               <dt>数量</dt><dd>{batchCount}</dd>
               {runtime === 'colab' && <><dt>最长运行</dt><dd>{maxRuntime} 分钟</dd></>}
             </dl>

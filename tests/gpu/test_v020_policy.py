@@ -42,6 +42,20 @@ def test_new_policy_is_normalized_and_instance_implies_existing_allocation():
     assert normalize_policy(policy)["lifecycle"] == "retain"
 
 
+@pytest.mark.parametrize("selection", ["workflow", "auto"])
+def test_gpu_selection_survives_nested_serialization_and_normalization(selection):
+    job = JobInput(project_id="p", model_id="m", workflow_key="w", workflow_version=1,
+                   execution_policy=Policy(provider="colab", gpu_selection=selection))
+    raw = job.model_dump()["execution_policy"]
+    assert raw["gpu_selection"] == selection
+    assert normalize_policy(raw)["gpu_selection"] == selection
+
+
+def test_gpu_selection_rejects_unknown_mode():
+    with pytest.raises(ValidationError):
+        Policy(gpu_selection="a100-first")
+
+
 def test_existing_allocation_requires_instance():
     with pytest.raises(ValidationError):
         Policy(allocation="existing")

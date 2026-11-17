@@ -475,3 +475,39 @@ def test_complete_legacy_snapshot_remains_reusable():
         {"model_id": workflow["model_id"], "revision": REVISION},
         current,
     ) is True
+
+
+@pytest.mark.parametrize("selection,expected_accelerator", [("workflow", "T4"), ("auto", "L4")])
+def test_real_smoke_gpu_selection_resolves_workflow_default_or_machine_list(monkeypatch, selection, expected_accelerator):
+    st = Store("sqlite://")
+    repo = Repository(st)
+    workflow = setup_workflow(repo)
+    default_key = {"variant": "GPU", "accelerator": "T4", "shape": "STANDARD"}
+    repo.update("workflows", workflow["id"], {"manifest": {**workflow["manifest"], "compute_spec": default_key}}, "owner")
+    st.create("projects", "owner", {"title": "p"}, record_id="project-1")
+    repo.create("accounts", "owner", {"enabled": True, "allow_allocation": True}, record_id="account-1")
+    enable_fake_real_smoke(monkeypatch)
+    monkeypatch.setattr(review_routes.GoogleColabProvider, "list_specs", lambda self: [
+        {"eligible": True, "key": {**default_key, "accelerator": "L4"}},
+        {"eligible": True, "key": default_key},
+    ])
+    payload = smoke_body(workflow["id"], "key", "prompt")
+    payload.pop("spec")
+    payload["gpu_selection"] = selection
+    response = body(review_routes.real_smoke(workflow["id"], payload,
+                    request({"Idempotency-Key": "selection-test"}), OWNER, st))
+    job = repo.get("jobs", response["job_id"], "owner")
+    assert job["execution_policy"]["gpu_selection"] == selection
+    assert job["requested_spec"]["key"]["accelerator"] == expected_accelerator
+    repeated = body(review_routes.real_smoke(workflow["id"], payload,
+                    request({"Idempotency-Key": "selection-test"}), OWNER, st))
+    assert repeated["job_id"] == job["id"]
+
+
+@pytest.mark.parametrize("selection,code", [("auto", "VALIDATION_ERROR"), ("invalid", "VALIDATION_ERROR")])
+def test_real_smoke_rejects_conflicting_or_invalid_gpu_selection(selection, code):
+    payload = smoke_body("workflow", "key", "prompt")
+    payload["gpu_selection"] = selection
+    with pytest.raises(APIError) as exc:
+        review_routes.real_smoke("workflow", payload, request({"Idempotency-Key": "key"}), OWNER, Store("sqlite://"))
+    assert exc.value.code == code

@@ -396,3 +396,33 @@ def test_retained_instance_refreshes_idle_deadline_on_subsequent_job_completion(
     assert second_done["state"] == "retained_idle"
     assert second_done["idle_deadline_at"] == 2000.0 + 30 * 60
 
+
+
+@pytest.mark.parametrize("legacy_lease", [False, True])
+@pytest.mark.parametrize("selection,expected_reuse", [("workflow", False), ("auto", True)])
+def test_gpu_selection_controls_reuse_of_retained_machine(repo, legacy_lease, selection, expected_reuse):
+    account(repo, provider="colab", budget={"daily": 100.0, "monthly": 100.0})
+    requested = {"variant": "VARIANT_GPU", "accelerator": "T4", "shape": "SHAPE_HIGHMEM"}
+    actual = {"key": {**requested, "accelerator": "A100"}}
+    lease = repo.create("leases", "owner-1", {"selected_spec": actual, "state": "idle"})
+    idle = repo.create("instances", "owner-1", {
+        "account_id": "acct-1", "provider": "colab", "state": "retained_idle", "current_job_id": None,
+        "compatibility_signature": "compat-v1", "lease_id": lease["id"],
+        **({} if legacy_lease else {"runtime_spec_requested": actual}),
+    })
+    service = InstanceService(repo, clock=lambda: 100.0, config={"unit_rate": 0.1, "daily_units": 100.0})
+    result = service.allocate(job(provider="colab", budget_units=1.0,
+                                  execution_policy={"provider": "colab", "gpu_selection": selection},
+                                  snapshot={"manifest": {"compute_spec": requested}}))
+    assert (result["id"] == idle["id"]) is expected_reuse
+
+
+def test_ready_instance_records_selected_lease_spec(repo):
+    service = InstanceService(repo, clock=lambda: 100.0)
+    current_job = job()
+    instance = service.allocate(current_job)
+    selected = {"key": {"variant": "VARIANT_GPU", "accelerator": "L4", "shape": "SHAPE_STANDARD"}}
+    lease = repo.create("leases", "owner-1", {"selected_spec": selected, "state": "active"})
+    service.bind_lease({**current_job, "instance_id": instance["id"]}, lease)
+    ready = service.mark_ready({**current_job, "instance_id": instance["id"]})
+    assert ready["runtime_spec_requested"] == selected

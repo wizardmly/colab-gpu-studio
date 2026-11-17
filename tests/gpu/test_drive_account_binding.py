@@ -190,7 +190,8 @@ def test_credential_bound_client_config_used_for_cli_colab_refresh_without_env_c
     assert captured["refresh_token"] == ["cli-refresh-token"]
 
 
-def test_explicit_account_admission_checks_that_account_and_freezes_drive_account_id(tmp_path, monkeypatch):
+@pytest.mark.parametrize("gpu_selection", ["workflow", "auto"])
+def test_explicit_account_admission_checks_that_account_and_freezes_drive_account_id(tmp_path, monkeypatch, gpu_selection):
     from app.admission import admit_job
     from app.gpu.registry import Registry
 
@@ -253,11 +254,13 @@ def test_explicit_account_admission_checks_that_account_and_freezes_drive_accoun
             "max_runtime_minutes": 10,
             "allocation": "auto",
             "account_id": new_acc["account_id"],
+            "gpu_selection": gpu_selection,
         },
     }
     job = admit_job(st, {"id": "owner-1", "role": "admin"}, body, "job-admit-1")
     assert job["requested_account_id"] == new_acc["account_id"]
     assert job["drive_account_id"] == old_acc["account_id"]
+    assert job["execution_policy"]["gpu_selection"] == gpu_selection
 
 
 def test_prep_job_created_by_scheduler_inherits_account_and_drive_account_id(tmp_path):

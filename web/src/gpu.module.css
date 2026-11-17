@@ -256,8 +256,8 @@
 .wfGroupHead > span:first-child { display: grid; flex: 1; min-width: 0; line-height: 1.35; }
 .wfGroupHead strong { font-size: 0.9rem; font-weight: 600; overflow-wrap: anywhere; }
 .wfGroupHead small { font-size: 0.72rem; }
-.versionList { display: grid; border-top: 1px solid var(--line); }
-.versionItem { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; }
+.versionList { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); }
+.versionItem { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; }
 .versionDetail { display: block; border-top: 1px solid var(--line); }
 .versionItem + .versionItem, .versionList > button { border-top: 1px solid var(--line); }
 .versionName { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
@@ -272,7 +272,8 @@
 .oauthConfirm { display: flex; align-items: flex-start; gap: 10px; font-size: 0.82rem; }
 
 /* 启用向导（内置草稿 → 可用工作流） */
-.activationPanel { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--line); }
+.activationPanel { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 10px; padding: 12px; border-top: 1px solid var(--line); }
+.activationPanel select { min-width: 0; max-width: 100%; }
 .activationSteps { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .activationSteps li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
 .activationSteps li[data-state='done'] { opacity: .72; }

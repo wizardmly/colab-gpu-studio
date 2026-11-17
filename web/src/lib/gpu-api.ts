@@ -237,7 +237,8 @@ export interface RealSmokeGpuWorkflowRequest {
   params: Record<string, unknown>;
   asset_ids: string[];
   account_id: string;
-  spec: ComputeSpec;
+  spec?: ComputeSpec;
+  gpu_selection?: 'workflow' | 'auto';
 }
 export const realSmokeGpuWorkflow = (
   id: string,

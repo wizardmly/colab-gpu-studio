@@ -360,7 +360,7 @@ class InstanceService:
         self._set(cursor, data, state="active", session=session)
         return selected
 
-    def _compatible(self, instance, job, account_id):
+    def _compatible(self, instance, job, account_id, session):
         data = self._data(instance)
         if self._value(data, "account_id") != account_id:
             return False
@@ -368,6 +368,23 @@ class InstanceService:
             return False
         if instance.state not in self._IDLE_STATES:
             return False
+        policy = self._job_policy(job)
+        requested = (
+            job.get("requested_spec") or policy.get("requested_spec")
+            or ((job.get("snapshot") or {}).get("manifest") or {}).get("compute_spec")
+        )
+        if (
+            self._provider(job) == "colab" and policy.get("gpu_selection") != "auto"
+            and requested and not self._requested(job, "instance_id")
+        ):
+            actual = data.get("runtime_spec_requested")
+            if not actual and data.get("lease_id"):
+                lease = self._find(session, "leases", data["lease_id"], instance.owner_id)
+                actual = self._data(lease).get("selected_spec")
+            requested_key = requested.get("key", requested) if isinstance(requested, Mapping) else requested
+            actual_key = actual.get("key", actual) if isinstance(actual, Mapping) else actual
+            if requested_key != actual_key:
+                return False
         signature = job.get("compatibility_signature")
         return not signature or data.get("compatibility_signature") == signature
 
@@ -474,7 +491,7 @@ class InstanceService:
                 if requested_account and data.get("account_id") != account_id:
                     raise AllocationError("指定实例与账号冲突")
                 account = next((a for a in accounts if self._account_id(a) == data.get("account_id")), None)
-                if account is None or not self._compatible(instance, job, self._account_id(account)):
+                if account is None or not self._compatible(instance, job, self._account_id(account), session):
                     raise InstanceConflict("指定实例不兼容或已被占用")
                 units = self._reserve_budget(session, job, account, provider)
                 return self._claim_existing(session, instance, job, account, key, stable_id, "requested_instance", units)
@@ -483,9 +500,9 @@ class InstanceService:
             idle = [r for r in self._rows(session, "instances", owner_id) if r.id != stable_id and r.state not in {"unknown", "cleanup_pending"}]
             if requested_account:
                 account = accounts[0]
-                candidates = [r for r in idle if self._compatible(r, job, self._account_id(account))]
+                candidates = [r for r in idle if self._compatible(r, job, self._account_id(account), session)]
             else:
-                candidates = [r for r in idle if any(self._compatible(r, job, self._account_id(a)) for a in accounts)]
+                candidates = [r for r in idle if any(self._compatible(r, job, self._account_id(a), session) for a in accounts)]
                 account = None
                 if candidates:
                     selected = sorted(candidates, key=lambda r: r.updated_at or r.created_at, reverse=True)[0]
@@ -521,6 +538,12 @@ class InstanceService:
                 raise InstanceConflict("instance is owned by another job")
             data["current_job_id"] = job.get("id")
             data["last_seen_at"] = self.clock()
+            if state == "ready":
+                lease = self._find(session, "leases", data["lease_id"], instance.owner_id) if data.get("lease_id") else None
+                data["runtime_spec_requested"] = (
+                    self._data(lease).get("selected_spec") or job.get("requested_spec")
+                    or ((job.get("snapshot") or {}).get("manifest") or {}).get("compute_spec")
+                )
             self._set(instance, data, state=state, session=session)
             self._emit(session, instance.owner_id, instance.project_id, instance.id, job.get("id"), state, message)
             return self._dict(instance)

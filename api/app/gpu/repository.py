@@ -1217,6 +1217,8 @@ class Repository:
             )
             if not job:
                 raise KeyError(job_id)
+            if job.state not in {"cleaning_up", "cleanup_pending", "failed"} or job.data.get("cancel_requested"):
+                return None
             leases = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
             if any(row.data.get("owner_job_id") == job_id and row.state != "deleted" for row in leases):
                 return None

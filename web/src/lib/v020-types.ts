@@ -9,6 +9,7 @@ export interface GpuExecutionPolicyV020 {
   provider: V020Provider;
   max_runtime_minutes: number;
   allocation?: GpuAllocation;
+  gpu_selection?: 'workflow' | 'auto';
   account_id?: string | null;
   instance_id?: string | null;
   lifecycle?: GpuLifecycle;

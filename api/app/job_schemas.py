@@ -14,6 +14,7 @@ _NEW_POLICY_FIELDS = {
     "instance_id",
     "lifecycle",
     "retain_idle_minutes",
+    "gpu_selection",
 }
 
 
@@ -40,6 +41,7 @@ class Policy(BaseModel):
     instance_id: str | None = None
     lifecycle: Literal["save", "batch", "smart", "retain"] | None = None
     retain_idle_minutes: int = Field(default=15, ge=1, le=30)
+    gpu_selection: Literal["workflow", "auto"] = "workflow"
 
     @field_validator("account_id", "instance_id")
     @classmethod

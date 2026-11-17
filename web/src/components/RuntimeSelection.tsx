@@ -12,6 +12,7 @@ export interface RuntimeSelectionValue {
   instanceId: string | null;
   lifecycle: RuntimeLifecycle;
   retainIdleMinutes: number;
+  gpuSelection?: 'workflow' | 'auto';
 }
 
 export interface RuntimeSelectionProps {
@@ -92,6 +93,15 @@ export function RuntimeSelection({ value, accounts, instances, provider, onChang
           {selectedAccount && <span className={styles.selectionHint}>当前账号：{selectedAccount.alias}。指定机器时不会静默切换到其他账号。</span>}
           {instanceReason && <span className={styles.selectionHint}>{instanceReason}</span>}
         </div>
+        {provider === 'colab' && !value.instanceId && <div className={styles.selectionRow}>
+          <label htmlFor="runtime-gpu-selection">GPU 配置
+            <select id="runtime-gpu-selection" value={value.gpuSelection || 'workflow'} onChange={(event) => update({ gpuSelection: event.target.value as 'workflow' | 'auto' })}>
+              <option value="workflow">工作流默认配置</option>
+              <option value="auto">不指定，按机器列表自动尝试</option>
+            </select>
+          </label>
+          <p className={styles.selectionHint}>{value.gpuSelection === 'auto' ? '按机器列表顺序申请，当前配置无法分配时尝试下一项，每项尝试一次。' : '只申请工作流指定的 GPU 配置。'}</p>
+        </div>}
         <div className={styles.selectionRow}>
           <label htmlFor="runtime-lifecycle">任务完成后的策略
             <select id="runtime-lifecycle" value={value.lifecycle} onChange={(event) => update({ lifecycle: event.target.value as RuntimeLifecycle })}>

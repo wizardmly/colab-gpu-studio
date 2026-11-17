@@ -53,7 +53,8 @@ export function WorkflowActivationPanel({
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
   const [accountId, setAccountId] = useState('');
-  const [spec, setSpec] = useState<ComputeSpec | null>(null);
+  const [specs, setSpecs] = useState<ComputeSpec[]>([]);
+  const [gpuSelection, setGpuSelection] = useState<'workflow' | 'auto'>('workflow');
   const [specsLoaded, setSpecsLoaded] = useState(false);
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [assets, setAssets] = useState<GalleryAsset[]>([]);
@@ -64,6 +65,10 @@ export function WorkflowActivationPanel({
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const onWatchRef = useRef(onWatch);
   onWatchRef.current = onWatch;
+  const workflowSpec = workflow.manifest?.compute_spec;
+  const requestedKey = gpuSelection === 'workflow' && workflowSpec && typeof workflowSpec === 'object'
+    ? workflowSpec as Record<string, unknown> : null;
+  const spec = selectEligibleColabGpuSpec(specs, requestedKey);
 
   const isCurrent = useCallback((token: number) => aliveRef.current && executionRef.current === token, []);
 
@@ -153,7 +158,7 @@ export function WorkflowActivationPanel({
           if (missing.length) throw new Error(`请先上传：${missing.join('、')}`);
           if (!consent) throw new Error('请先确认会真实开 GPU 并产生费用');
           if (!projectId) throw new Error('请先在顶栏选择项目。冒烟只会记在当前项目里，不会自动改用别的项目。');
-          if (!accountId || !spec) throw new Error('当前账号没有可用的 GPU 规格，请先授权 Colab');
+          if (!accountId || !spec) throw new Error('当前账号无法申请所选 GPU 配置，请检查机器列表或选择自动尝试');
           const minutes = getSmokeRuntimeMinutes(snapshot);
           say(minutes === null ? '正在提交真实 GPU 冒烟…' : `正在提交真实 GPU 冒烟，最长 ${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} 分钟`, token);
           const smokeBody = activationSmokeParams(required, inputs);
@@ -165,7 +170,7 @@ export function WorkflowActivationPanel({
               params: smokeBody.params,
               asset_ids: smokeBody.assetIds,
               account_id: accountId,
-              spec,
+              gpu_selection: gpuSelection,
             },
             smokeIdempotencyKey(workflow.id, projectId, smokeBody.assetIds, terminalSmokeJobId(snapshot)),
           );
@@ -203,7 +208,7 @@ export function WorkflowActivationPanel({
       runningRef.current = false;
       if (isCurrent(token)) setBusy(false);
     }
-  }, [accountId, busy, consent, inputs, isCurrent, onDone, projectId, refresh, say, spec, waitForSmoke, workflow.id]);
+  }, [accountId, busy, consent, gpuSelection, inputs, isCurrent, onDone, projectId, refresh, say, spec, waitForSmoke, workflow.id]);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -235,14 +240,11 @@ export function WorkflowActivationPanel({
         if (request.provider !== 'colab') {
           throw new Error('没有已启用且已连接 Colab 的账号，无法读取真实 GPU 规格');
         }
-        const preferredSpec = (workflow.manifest?.compute_spec && typeof workflow.manifest.compute_spec === 'object')
-          ? workflow.manifest.compute_spec as Record<string, unknown>
-          : null;
-        const eligible = selectEligibleColabGpuSpec(await getGpuComputeSpecs('colab', request.accountId), preferredSpec);
+        const available = await getGpuComputeSpecs('colab', request.accountId);
         if (!isCurrent(token)) return;
-        if (!eligible) throw new Error('当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
+        if (!selectEligibleColabGpuSpec(available)) throw new Error('当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
         setAccountId(request.accountId);
-        setSpec(eligible);
+        setSpecs(available);
       } catch (err) {
         if (isCurrent(token)) setError(apiMessage(err));
       } finally {
@@ -385,6 +387,15 @@ export function WorkflowActivationPanel({
           </div>
         </details>
       ) : null}
+      {needsNewSmoke ? <div className={styles.paramField}>
+        <label htmlFor="activation-gpu-selection">GPU 配置</label>
+        <select id="activation-gpu-selection" value={gpuSelection} disabled={busy} onChange={(event) => setGpuSelection(event.target.value as 'workflow' | 'auto')}>
+          <option value="workflow">工作流默认配置</option>
+          <option value="auto">不指定，按机器列表自动尝试</option>
+        </select>
+        <p className="muted small">{gpuSelection === 'auto' ? '按机器列表顺序申请，当前配置无法分配时尝试下一项，每项尝试一次。' : '只申请工作流指定的 GPU 配置。'}</p>
+        {specsLoaded && accountId && !spec ? <p className={styles.errorText}>当前账号无法申请工作流指定的 GPU 配置，可选择按机器列表自动尝试。</p> : null}
+      </div> : null}
       {needsNewSmoke ? (
         <label className={styles.checkline}>
           <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
@@ -409,7 +420,7 @@ export function WorkflowActivationPanel({
         <button
           className="button"
           type="button"
-          disabled={busy || !specsLoaded || (needsNewSmoke && (!consent || missing.length > 0 || !projectId))}
+          disabled={busy || !specsLoaded || (needsNewSmoke && (!consent || missing.length > 0 || !projectId || !spec))}
           onClick={() => void runAll()}
         >
           {busy ? '执行中…' : data?.done ? '重新检查' : existingSmoke ? '继续验收并启用' : '一键跑通并启用'}

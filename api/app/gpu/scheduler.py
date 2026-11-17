@@ -726,50 +726,31 @@ class Scheduler:
         key = spec.get("key")
         return isinstance(key, dict) and key.get("variant") in {"GPU", "VARIANT_GPU"}
 
-    @staticmethod
-    def _prefer_a100_fallback() -> bool:
-        return os.getenv("GPU_PREFER_A100_FALLBACK") == "1"
+    def _spec_fallback_enabled(self, job: dict) -> bool:
+        snapshot = job.get("snapshot") or {}
+        policy = job.get("execution_policy") or {}
+        selection = policy.get("gpu_selection")
+        unspecified = not (
+            job.get("requested_spec") or policy.get("requested_spec")
+            or (snapshot.get("manifest") or {}).get("compute_spec")
+        )
+        return (
+            self._provider_name(job) == "colab"
+            and not (job.get("prep") or snapshot.get("prep") or snapshot.get("system_smoke"))
+            and not (job.get("requested_instance_id") or policy.get("instance_id") or policy.get("allocation") == "existing")
+            and (selection == "auto" or (selection is None and unspecified))
+        )
 
     def _candidate_specs(self, job: dict, specs: list[dict]) -> list[dict]:
-        """Rank eligible GPU specs: A100 first, then workflow compute_spec (T4/L4), then L4."""
-        snapshot = job.get("snapshot") or {}
-        base = (snapshot.get("manifest") or {}).get("compute_spec") or {}
-        base_accel = str(base.get("accelerator") or "").upper() if isinstance(base, dict) else ""
-        base_shape = str(base.get("shape") or "").upper() if isinstance(base, dict) else ""
+        """Visit eligible GPU configurations once, in the machine list's order."""
         exhausted = set(job.get("exhausted_spec_keys") or [])
-        gpus = [s for s in specs if s.get("eligible") is True and self._has_gpu(s)]
-        if not gpus:
-            return []
-
-        def accel_of(item: dict) -> str:
-            key = item.get("key")
-            return str(key.get("accelerator") or "").upper() if isinstance(key, dict) else ""
-
-        def shape_of(item: dict) -> str:
-            key = item.get("key")
-            return str(key.get("shape") or "").upper() if isinstance(key, dict) else ""
-
         ranked: list[dict] = []
-
-        def add(item: dict | None) -> None:
-            if item is not None and item not in ranked:
-                ranked.append(item)
-
-        a100 = next((s for s in gpus if accel_of(s) == "A100" and shape_of(s) == "SHAPE_HIGHMEM"), None) or next(
-            (s for s in gpus if accel_of(s) == "A100"), None
-        )
-        add(a100)
-        if base_accel:
-            add(next((s for s in gpus if accel_of(s) == base_accel and (not base_shape or shape_of(s) == base_shape)), None))
-            add(next((s for s in gpus if accel_of(s) == base_accel), None))
-        if base_accel != "L4":
-            add(next((s for s in gpus if accel_of(s) == "L4"), None))
-            if not base_accel:
-                add(next((s for s in gpus if accel_of(s) == "T4" and shape_of(s) == "SHAPE_HIGHMEM"), None))
-                add(next((s for s in gpus if accel_of(s) == "T4"), None))
-        if not ranked:
-            add(gpus[0])
-        return [s for s in ranked if self._spec_key(s) not in exhausted]
+        for spec in specs:
+            key = self._spec_key(spec)
+            if spec.get("eligible") is True and self._has_gpu(spec) and key not in exhausted:
+                ranked.append(spec)
+                exhausted.add(key)
+        return ranked
 
     def _select_spec(self, job: dict, provider: Any) -> dict:
         try:
@@ -781,10 +762,11 @@ class Scheduler:
         snapshot = job.get("snapshot") or {}
         smoke = snapshot.get("system_smoke") is True
         prep = snapshot.get("prep") is True
-        if self._prefer_a100_fallback() and snapshot.get("workflow_smoke") is True and job.get("exhausted_spec_keys"):
+        if self._spec_fallback_enabled(job):
             candidates = self._candidate_specs(job, specs)
             if candidates:
                 return candidates[0]
+            raise ComputeError("机器列表中的可申请 GPU 规格已全部尝试")
         # 官方 runtimespecs 只返回 key(variant/accelerator/shape)。经审查的工作流在
         # manifest.compute_spec 写明已验证过的规格；普通任务只允许这个规格，
         # 管理员冒烟任务按其请求的规格运行，缓存准备只用固定的 CPU 规格。
@@ -873,24 +855,28 @@ class Scheduler:
         try:
             if isinstance(provider, DisabledProvider):
                 raise ProviderUnavailable(provider.reason)
-            spec = (
-                {"provider": self._provider_name(job)}
-                if self._provider_name(job) == "mock"
-                else self._select_spec(job, provider)
-            )
+            spec = lease.get("selected_spec") if lease.get("create_attempts") else None
+            if spec is None:
+                spec = (
+                    {"provider": self._provider_name(job)}
+                    if self._provider_name(job) == "mock"
+                    else self._select_spec(job, provider)
+                )
         except ProviderUnavailable as exc:
             return self._begin_failure(job, "gpu_provider_unavailable", self._safe_error(exc))
         except Exception as exc:
             return self._begin_failure(job, "gpu_spec_invalid", self._safe_error(exc))
         if (
-            self._prefer_a100_fallback()
-            and self._provider_name(job) == "colab"
-            and (job.get("snapshot") or {}).get("workflow_smoke") is True
+            self._spec_fallback_enabled(job)
             and isinstance(spec, dict)
             and spec.get("key")
             and self._spec_key(job.get("requested_spec") or {}) != self._spec_key(spec)
         ):
-            job = self._update("jobs", job["id"], {"requested_spec": spec}, job.get("owner_id"))
+            job = self._update(
+                "jobs", job["id"],
+                {"requested_spec": spec, "execution_policy": {**(job.get("execution_policy") or {}), "gpu_selection": "auto"}},
+                job.get("owner_id"),
+            )
         attempts = int(lease.get("create_attempts") or 0)
         if attempts > self.config.create_retries:
             return self._begin_failure(job, "gpu_create_failed", "GPU runtime allocation failed")
@@ -974,7 +960,8 @@ class Scheduler:
         )
 
     def _allocation_failed(self, job: dict, exc: ColabAllocationError) -> dict:
-        code = "gpu_capacity_unavailable" if exc.reason == "NO_RUNTIMES" else "gpu_allocation_failed"
+        unavailable = exc.reason in {"NO_RUNTIMES", "CAPACITY_UNAVAILABLE", "ACCELERATOR_UNAVAILABLE"}
+        code = "gpu_capacity_unavailable" if unavailable else "gpu_allocation_failed"
         return self._begin_failure(job, code, str(exc))
 
     def _expired(self, job: dict) -> bool:
@@ -1390,14 +1377,11 @@ class Scheduler:
         )
 
     def _try_spec_fallback(self, job: dict, state: str) -> dict | None:
-        if not self._prefer_a100_fallback() or state != "failed":
+        if not self._spec_fallback_enabled(job) or state != "failed":
             return None
         if job.get("error_code") != "gpu_capacity_unavailable" or self._provider_name(job) != "colab":
             return None
-        snapshot = job.get("snapshot") or {}
-        if snapshot.get("workflow_smoke") is not True:
-            return None
-        if job.get("cancel_requested") or job.get("prep") or snapshot.get("prep") or snapshot.get("system_smoke"):
+        if job.get("cancel_requested"):
             return None
         requeue = getattr(self.store, "requeue_spec_fallback", None)
         if not callable(requeue):
@@ -1414,18 +1398,12 @@ class Scheduler:
         exhausted = list(job.get("exhausted_spec_keys") or [])
         if failed_key and failed_key not in exhausted:
             exhausted.append(failed_key)
-        for item in specs:
-            item_key = item.get("key")
-            if isinstance(item_key, dict) and str(item_key.get("accelerator") or "").upper() == failed_accel:
-                sk = self._spec_key(item)
-                if sk and sk not in exhausted:
-                    exhausted.append(sk)
         candidates = self._candidate_specs({**job, "exhausted_spec_keys": exhausted}, specs)
         if not candidates:
             return None
         next_spec = candidates[0]
         next_accel = str((next_spec.get("key") or {}).get("accelerator") or "GPU").upper()
-        note = f"{failed_accel} 暂无空闲运行时（NO_RUNTIMES），自动降级切换至 {next_accel} 重试"
+        note = f"{failed_accel} 申请失败，按机器列表切换至 {next_accel} 重试"
         return requeue(job["id"], job["owner_id"], exhausted, next_spec, note)
 
     def _finish_cleanup(self, job: dict, state: str, message: str, **patch) -> dict:

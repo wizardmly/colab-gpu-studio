@@ -260,7 +260,7 @@ def _eligible_spec(specs, requested_key):
         key = spec.get("key")
         if not isinstance(key, Mapping) or key.get("variant") not in {"GPU", "VARIANT_GPU"}:
             continue
-        if dict(key) == dict(requested_key):
+        if requested_key is None or dict(key) == dict(requested_key):
             return copy.deepcopy(dict(spec))
     raise APIError("GPU_UNAVAILABLE", "请求的GPU规格不是当前账户实际可用规格")
 
@@ -624,7 +624,14 @@ def real_smoke(
     ):
         raise APIError("VALIDATION_ERROR", "asset_ids格式无效")
     requested_key = _spec_key(body.get("spec"))
-    if requested_key is None:
+    gpu_selection = body.get("gpu_selection")
+    if gpu_selection not in (None, "workflow", "auto"):
+        raise APIError("VALIDATION_ERROR", "GPU 配置只能选择 workflow 或 auto")
+    if gpu_selection == "auto" and body.get("spec") is not None:
+        raise APIError("VALIDATION_ERROR", "自动选择 GPU 时请省略指定规格")
+    if body.get("spec") is not None and requested_key is None:
+        raise APIError("GPU_SPEC_REQUIRED", "必须提供来自当前账户的spec.key")
+    if requested_key is None and gpu_selection is None:
         raise APIError("GPU_SPEC_REQUIRED", "必须提供来自当前账户的spec.key")
     key = _idempotency_key(request)
     account_id = body.get("account_id")
@@ -633,6 +640,10 @@ def real_smoke(
     repo = Repository(st)
     _require_account(repo, user["id"], account_id)
     row = own(repo, "workflows", workflow_id, user)
+    if gpu_selection == "workflow" and requested_key is None:
+        requested_key = _spec_key({"key": (row.get("manifest") or {}).get("compute_spec")})
+        if requested_key is None:
+            raise APIError("GPU_SPEC_REQUIRED", "工作流没有声明 GPU 配置，请选择自动选择 GPU")
     if row.get("state") not in {"draft", "validated"}:
         raise APIError("WORKFLOW_REVIEW_INVALID", "真实冒烟只能用于未发布的draft或validated工作流")
     model = _model(repo, user["id"], row.get("model_id"))
@@ -667,13 +678,14 @@ def real_smoke(
         "params": copy.deepcopy(body.get("params", {})),
         "asset_ids": copy.deepcopy(asset_ids),
         "loras": copy.deepcopy(body.get("loras") or []),
-        "spec": copy.deepcopy(body["spec"]),
+        "spec": copy.deepcopy(body.get("spec")),
         "execution_policy": {
             "provider": "colab",
             "account_id": account_id,
             "shutdown_after_job": True,
             "max_runtime_minutes": runtime,
             "idle_grace_minutes": 0,
+            **({"gpu_selection": gpu_selection} if gpu_selection is not None else {}),
         },
     }
     previous = next(

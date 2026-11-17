@@ -11,7 +11,8 @@ const { outputFiles } = await build({
     import { JobHistoryDetails } from './src/components/JobHistoryDetails';
     import { taskStatusNote } from './src/lib/job-detail-copy';
     import { gpuLabel, canRetainJobInstance } from './src/lib/gpu-label';
-    module.exports = { gpuLabel, canRetainJobInstance, taskStatusNote,
+    import { rankColabGpuSpecs } from './src/lib/colab-check';
+    module.exports = { gpuLabel, canRetainJobInstance, taskStatusNote, rankColabGpuSpecs,
       renderDetails(job) { return renderToStaticMarkup(createElement(JobHistoryDetails, { job, live: true })); },
       render(job) {
       return renderToStaticMarkup(createElement(TasksPanel, {
@@ -26,6 +27,15 @@ const { outputFiles } = await build({
 const module = { exports: {} };
 new Function('require', 'module', 'exports', outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
 const { gpuLabel, canRetainJobInstance, taskStatusNote, render, renderDetails } = module.exports;
+const { rankColabGpuSpecs } = module.exports;
+const spec = (accelerator, shape = 'SHAPE_STANDARD', eligible = true, variant = 'VARIANT_GPU') => ({
+  key: { variant, accelerator, shape }, eligible,
+});
+const machineList = [spec('NONE', 'SHAPE_STANDARD', true, 'VARIANT_CPU'), spec('L4'),
+  spec('A100', 'SHAPE_HIGHMEM'), spec('T4', 'SHAPE_HIGHMEM'), spec('L4'), spec('T4', 'SHAPE_STANDARD', false)];
+assert.deepEqual(rankColabGpuSpecs(machineList), machineList.slice(1, 4));
+assert.deepEqual(rankColabGpuSpecs(machineList, machineList[3].key), [machineList[3]]);
+assert.deepEqual(rankColabGpuSpecs(machineList, spec('T4').key), []);
 const base = { id: 'test', project_id: 'example', provider: 'colab', state: 'completed',
   instance_id: 'instance', instance_state: 'deleted', runtime_deleted: true,
   runtime_spec_requested: { accelerator: 'L4' } };

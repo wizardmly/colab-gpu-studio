@@ -61,21 +61,16 @@ if [ ! -f .env ]; then
   set_env_var "GPU_REAL_ENABLED" "1"
   set_env_var "GPU_STORAGE" "drive"
   set_env_var "GPU_REAL_RETENTION_VERIFIED" "1"
-  set_env_var "GPU_PREFER_A100_FALLBACK" "1"
   set_env_var "GPU_MAX_RUNTIME_MINUTES" "60"
   set_env_var "GPU_UNIT_RATE" "0.027"
   set_env_var "GPU_DAILY_UNITS" "100"
   set_env_var "GPU_MONTHLY_UNITS" "2200"
   set_env_var "GPU_MAX_JOB_UNITS" "15"
   chmod 600 .env
-  echo "    已生成并优化 .env（已开启 GPU_REAL_ENABLED=1, GPU_STORAGE=drive, 优先A100自动降级及 60 分钟视频超时上限）。"
+  echo "    已生成并优化 .env（已开启 GPU_REAL_ENABLED=1, GPU_STORAGE=drive 及 60 分钟视频超时上限）。"
   echo "    请使用以下命令查看初始网页登录密码并离线备份 ENCRYPTION_KEY："
   echo "      grep -E '^(STUDIO_PASSWORD|ENCRYPTION_KEY|STUDIO_API_TOKEN)=' .env"
 else
-  if ! grep -qE '^GPU_PREFER_A100_FALLBACK=' .env; then
-    set_env_var "GPU_PREFER_A100_FALLBACK" "1"
-    echo "    已为现有 .env 自动开启 GPU_PREFER_A100_FALLBACK=1（优先 A100，无卡自动切换 T4/L4）。"
-  fi
   echo "    检测到已有 .env，保留现有密钥与配置不覆盖。"
 fi
 

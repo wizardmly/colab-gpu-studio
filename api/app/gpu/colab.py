@@ -24,6 +24,8 @@ class ColabAllocationError(ColabError):
         # Only the numeric code is shown; Google's own text may carry private data.
         if reason == "NO_RUNTIMES":
             message = "Colab 暂时无法分配运行时（NO_RUNTIMES）；请稍后重试"
+        elif reason in {"CAPACITY_UNAVAILABLE", "ACCELERATOR_UNAVAILABLE"}:
+            message = f"Colab 无法分配当前运行时（HTTP {code}）"
         else:
             message = f"Colab 分配 Operation 失败（code {code}）"
         super().__init__(message)
@@ -129,6 +131,11 @@ class GoogleColabProvider:
             )
         except httpx.HTTPError as exc:
             raise ColabError("Colab 隧道网络异常，远端结果可能未知，将保留租约进行协调") from exc
+        if path == "/tun/m/assign":
+            if response.status_code == 412:
+                raise ColabAllocationError(412, "CAPACITY_UNAVAILABLE")
+            if response.status_code == 400 and (params or {}).get("accelerator"):
+                raise ColabAllocationError(400, "ACCELERATOR_UNAVAILABLE")
         if response.status_code >= 400 and response.status_code != 404:
             raise ColabError(f"Colab 隧道请求失败（HTTP {response.status_code}）")
         return response
@@ -322,21 +329,26 @@ class GoogleColabProvider:
         if shape == "SHAPE_HIGHMEM" and accelerator not in _HIGH_MEM_ONLY_ACCELERATORS:
             params["shape"] = "hm"
 
-        first = self._tunnel_json(self._tunnel_request("GET", "/tun/m/assign", params=params))
-        if "endpoint" in first and isinstance(first.get("runtimeProxyInfo"), dict):
-            assigned = first
-        else:
-            xsrf = first.get("token")
-            if not isinstance(xsrf, str) or not xsrf:
-                raise ColabError("Colab 隧道分配未返回 XSRF 令牌")
-            assigned = self._tunnel_json(
-                self._tunnel_request(
-                    "POST",
-                    "/tun/m/assign",
-                    params=params,
-                    headers={"X-Goog-Colab-Token": xsrf},
+        try:
+            first = self._tunnel_json(self._tunnel_request("GET", "/tun/m/assign", params=params))
+            if "endpoint" in first and isinstance(first.get("runtimeProxyInfo"), dict):
+                assigned = first
+            else:
+                xsrf = first.get("token")
+                if not isinstance(xsrf, str) or not xsrf:
+                    raise ColabError("Colab 隧道分配未返回 XSRF 令牌")
+                assigned = self._tunnel_json(
+                    self._tunnel_request(
+                        "POST",
+                        "/tun/m/assign",
+                        params=params,
+                        headers={"X-Goog-Colab-Token": xsrf},
+                    )
                 )
-            )
+        except ColabAllocationError:
+            if int(lease.get("create_attempts") or 0) <= 1:
+                self.store.update("leases", lease["id"], {"operation_done": True}, self.owner_id)
+            raise
         endpoint = assigned.get("endpoint")
         proxy = assigned.get("runtimeProxyInfo") or {}
         proxy_url = proxy.get("url")

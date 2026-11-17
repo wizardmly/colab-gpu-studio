@@ -10,7 +10,7 @@ from app.common import APIError
 from app.gpu.accounts import DEFAULT_ACCOUNT_NAMESPACE, AccountService
 from app.gpu.compute import GpuConfig, default_executor_factory, default_provider_factory
 from app.gpu.drive import DriveStorage
-from app.gpu.google import GoogleService
+from app.gpu.google import GoogleOAuthError, GoogleService
 from app.security import decrypt_secret, encrypt_secret
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -84,7 +84,16 @@ def test_explicit_account_refresh_does_not_use_other_account(monkeypatch):
     assert seen == ["refresh-account-b"]
 
 
-def test_provider_and_executor_factories_route_account_id(monkeypatch):
+@pytest.mark.parametrize("binding,expected_account", [
+    ({"account_id": "account-a"}, "account-a"),
+    ({"requested_account_id": "account-a"}, "account-a"),
+    ({"execution_policy": {"account_id": "account-a"}}, "account-a"),
+    ({"execution_policy": {"requested_account_id": "account-a"}}, "account-a"),
+    ({"account_id": "account-a", "requested_account_id": "account-b",
+      "execution_policy": {"account_id": "account-b"}}, "account-a"),
+    ({}, None),
+])
+def test_provider_and_executor_factories_route_account_id(monkeypatch, binding, expected_account):
     captured = {}
 
     class FakeProvider:
@@ -101,11 +110,21 @@ def test_provider_and_executor_factories_route_account_id(monkeypatch):
     monkeypatch.setattr("app.gpu.mcp.MCPGPUExecutor", FakeExecutor)
     monkeypatch.setenv("STUDIO_OFFLINE_TEST", "0")
     config = GpuConfig(real_enabled=True)
-    job = {"provider": "colab", "owner_id": "owner-1", "account_id": "account-a", "execution_policy": {"strategy": "existing"}}
+    job = {"provider": "colab", "owner_id": "owner-1", **binding}
     default_provider_factory(job, config, store="repo")
     default_executor_factory(job, config, store="repo")
-    assert captured["provider"] == {"store": "repo", "owner_id": "owner-1", "account_id": "account-a"}
-    assert captured["executor"] == {"store": "repo", "owner_id": "owner-1", "account_id": "account-a"}
+    assert captured["provider"] == {"store": "repo", "owner_id": "owner-1", "account_id": expected_account}
+    assert captured["executor"] == {"store": "repo", "owner_id": "owner-1", "account_id": expected_account}
+
+
+@pytest.mark.parametrize("purpose,label", [("colab", "Colab"), ("drive", "Drive")])
+def test_missing_credential_reports_account_and_purpose(purpose, label):
+    google = GoogleService(MemoryRepo(), "owner-1", account_id="account-a")
+    try:
+        with pytest.raises(GoogleOAuthError, match=f"当前 Google 账号缺少 {label} 授权"):
+            google.access_token(purpose)
+    finally:
+        google.close()
 
 
 def test_drive_file_cache_isolated_by_account():

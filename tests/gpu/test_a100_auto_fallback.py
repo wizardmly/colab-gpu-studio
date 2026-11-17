@@ -1,5 +1,7 @@
 """Exact workflow GPU selection and machine-list fallback through allocation/cleanup."""
 
+import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -9,6 +11,7 @@ from app.gpu.colab import ColabAllocationError, GoogleColabProvider
 from app.gpu.compute import GpuConfig, MockGPUExecutor
 from app.gpu.repository import Repository
 from app.gpu.scheduler import Scheduler
+from app.security import encrypt_secret
 
 SPECS = [
     {"key": {"variant": "VARIANT_GPU", "accelerator": "A100", "shape": "SHAPE_HIGHMEM"}, "eligible": True},
@@ -219,3 +222,97 @@ def test_unknown_allocation_retry_keeps_original_config_when_machine_list_change
     second = scheduler._allocation(repo.get("jobs", job["id"], "owner"))
     assert second["state"] == "allocating"
     assert provider.tried == [SPECS[0]["key"], SPECS[0]["key"]]
+
+
+@pytest.mark.parametrize("workflow_smoke", [False, True])
+def test_fallback_revalidates_scoped_oauth_and_allocates_next_gpu_on_same_account(monkeypatch, workflow_smoke):
+    monkeypatch.setenv("STUDIO_OFFLINE_TEST", "0")
+    monkeypatch.setattr("app.gpu.ccu.maybe_sample_balance", lambda *args, **kwargs: None)
+    repo, _, job, scheduler = setup(
+        state="queued",
+        requested_spec=SPECS[0] if workflow_smoke else None,
+        account_id="compute-a" if workflow_smoke else None,
+        requested_account_id="compute-a" if workflow_smoke else None,
+        execution_policy={"provider": "colab", "gpu_selection": "auto", "lifecycle": "save",
+                          "account_id": "compute-a" if workflow_smoke else None},
+        drive_account_id="shared-drive",
+        snapshot={"workflow_smoke": workflow_smoke, "manifest": {"compute_spec": SPECS[2]["key"]}},
+    )
+    for account in ("compute-a", "compute-b"):
+        repo.create("accounts", "owner", {
+            "account_id": account, "enabled": True, "allow_allocation": True,
+            "provider": "colab", "budget": {"daily": 100.0, "monthly": 100.0},
+        }, record_id=account)
+        repo.create("credentials", "owner", {
+            "provider": "google", "purpose": "colab", "account_id": account,
+            "encrypted_access_token": encrypt_secret(f"access-{account}"),
+            "encrypted_refresh_token": encrypt_secret(f"refresh-{account}"),
+            "expires_at": time.time() + 3600,
+            "scope": "https://www.googleapis.com/auth/colaboratory",
+        })
+    credentials = repo.list("credentials", "owner")
+    allocations = []
+
+    def http(request):
+        assert request.headers["authorization"] == "Bearer access-compute-a"
+        if request.url.path == "/v1beta/runtimespecs":
+            return httpx.Response(200, json={"runtimeSpecs": [SPECS[0], SPECS[2]]})
+        if request.method == "POST" and request.url.path == "/v1beta/runtimes":
+            accelerator = json.loads(request.content)["runtimeSpec"]["accelerator"]
+            allocations.append(accelerator)
+            return httpx.Response(200, json={"name": f"operations/allocate-{accelerator}", "done": accelerator == "T4"})
+        if request.url.path == "/v1/operations/allocate-A100":
+            return httpx.Response(200, json={"done": True, "error": {"code": 9, "details": [
+                {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "NO_RUNTIMES"},
+            ]}})
+        if request.url.path.startswith("/v1beta/runtimes/"):
+            return httpx.Response(404)
+        pytest.fail(f"unexpected Colab request {request.method} {request.url.path}")
+
+    original_init = GoogleColabProvider.__init__
+    with httpx.Client(transport=httpx.MockTransport(http)) as client:
+        def init_with_mock_http(self, *args, **kwargs):
+            original_init(self, *args, client=client, **kwargs)
+
+        monkeypatch.setattr(GoogleColabProvider, "__init__", init_with_mock_http)
+        scheduler = Scheduler(repo, config=scheduler.config)
+        for _ in range(20):
+            scheduler.tick()
+            result = repo.get("jobs", job["id"], "owner")
+            if result["state"] in {"failed", "cancelled"} or (
+                result["state"] == "preparing" and len(allocations) == 2
+            ):
+                break
+
+    assert result["state"] == "preparing", result.get("error_message")
+    assert allocations == ["A100", "T4"]
+    assert result["account_id"] == "compute-a"
+    assert result["drive_account_id"] == "shared-drive"
+    assert len(result["attempt_history"]) == 1
+    assert result["attempt_history"][0]["account_id"] == "compute-a"
+    instances = repo.list("instances", "owner")
+    assert len(instances) == 2
+    assert {row["account_id"] for row in instances} == {"compute-a"}
+    assert {row["state"] for row in instances} == {"deleted", "allocating"}
+    assert repo.list("credentials", "owner") == credentials
+
+
+@pytest.mark.parametrize("identity_storage", ["column", "json"])
+def test_fallback_preserves_legacy_account_identity_in_both_storage_fields(identity_storage):
+    request_body = {"execution_policy": {"gpu_selection": "auto", "account_id": None}}
+    repo, _, job, _ = setup(state="failed", account_id="compute-a", request_body=request_body,
+                            execution_policy={"gpu_selection": "auto"})
+    with repo.store.Session.begin() as session:
+        row = session.get(repo._model("jobs"), job["id"])
+        if identity_storage == "column":
+            row.data = {key: value for key, value in row.data.items() if key != "account_id"}
+        else:
+            row.account_id = None
+
+    queued = repo.requeue_spec_fallback(job["id"], "owner", ["exhausted"], SPECS[2], "retry")
+    assert queued["account_id"] == "compute-a"
+    assert queued["attempt_history"][0]["account_id"] == "compute-a"
+    assert queued["request_body"] == request_body
+    with repo.store.Session() as session:
+        row = session.get(repo._model("jobs"), job["id"])
+        assert row.account_id == row.data["account_id"] == "compute-a"

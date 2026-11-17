@@ -333,6 +333,14 @@ class DisabledExecutor:
         raise ProviderUnavailable("real GPU executor is disabled")
 
 
+def _job_account_id(job: dict) -> str | None:
+    policy = job.get("execution_policy") or {}
+    return (
+        job.get("account_id") or job.get("requested_account_id")
+        or policy.get("account_id") or policy.get("requested_account_id")
+    )
+
+
 def default_provider_factory(
     job: dict, config: GpuConfig | None = None, *, store=None, owner_id: str | None = None
 ):
@@ -345,7 +353,7 @@ def default_provider_factory(
     if name == "colab":
         from .colab import GoogleColabProvider
 
-        return GoogleColabProvider(store, owner_id or job.get("owner_id"), account_id=job.get("account_id"))
+        return GoogleColabProvider(store, owner_id or job.get("owner_id"), account_id=_job_account_id(job))
     return DisabledProvider(f"unknown GPU provider: {name}")
 
 
@@ -378,7 +386,7 @@ def _mcp_executor(job: dict, *, store=None, owner_id: str | None = None):
     return MCPGPUExecutor.from_environment(
         store=store,
         owner_id=owner_id or job.get("owner_id"),
-        account_id=job.get("account_id"),
+        account_id=_job_account_id(job),
     )
 
 

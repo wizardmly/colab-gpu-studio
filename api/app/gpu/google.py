@@ -400,7 +400,8 @@ class GoogleService:
             raise ValueError("Google OAuth purpose无效")
         credential = self._credential(purpose, account_id=self.account_id)
         if not credential:
-            raise GoogleOAuthError("Google OAuth未连接，真实GPU能力已关闭")
+            service = "Colab" if purpose == "colab" else "Drive"
+            raise GoogleOAuthError(f"当前 Google 账号缺少 {service} 授权，请检查任务绑定的账号")
         if not self._scope_sufficient(purpose, credential.get("scope")):
             raise GoogleOAuthError("Google OAuth权限不足，请重新授权")
         try:

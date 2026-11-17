@@ -1223,6 +1223,12 @@ class Repository:
             if any(row.data.get("owner_job_id") == job_id and row.state != "deleted" for row in leases):
                 return None
             data = copy.deepcopy(job.data)
+            # GPU fallback keeps the selected Google identity across validation
+            # and the next instance allocation. Older rows may store it only in
+            # the typed column.
+            account_id = job.account_id or data.get("account_id")
+            if account_id is not None:
+                data["account_id"] = account_id
             keys = data.get("attempt_retry_keys") or []
             history = data.get("attempt_history") or []
             history.append(
@@ -1233,7 +1239,7 @@ class Repository:
                 "cancel_requested", "requested_outcome", "cleanup_final_state", "cleanup_attempts", "cleanup_next_epoch",
                 "upload_attempts", "started_epoch", "stopped_at", "deadline_epoch", "validated_epoch", "budget_reserved",
                 "runtime_deleted", "actual_units", "prep_report", "progress", "awaiting_prep",
-                "instance_completion_recorded", "instance_id", "instance_state", "instance_bound", "account_id",
+                "instance_completion_recorded", "instance_id", "instance_state", "instance_bound",
                 "requested_instance_id", "account_alias_snapshot", "selection_reason", "allocation_key",
                 "attempt_id", "runtime_id", "request_id", "stage", "worker_timings", "output_bytes",
                 "started_at", "finished_at", "poll_retry_count", "poll_retry_at", "gpu_reported", "gpu_diagnostics",
@@ -1255,7 +1261,7 @@ class Repository:
             job.data = data
             job.state = "queued"
             job.instance_id = None
-            job.account_id = None
+            job.account_id = account_id
             job.version += 1
             job.updated_at = utcnow()
             session.add(

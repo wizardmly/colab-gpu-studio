@@ -7,11 +7,18 @@ import { formatInstanceTime as formatTime } from '../lib/instance-time';
 import { gpuLabel } from '../lib/gpu-label';
 import styles from './v020.module.css';
 
-type Filter = 'all' | 'active' | 'retained' | 'history';
+type Filter = 'current' | 'active' | 'retained' | 'history';
 type Action = 'retain' | 'stop';
 type Detail = GpuInstance & {
   jobs?: Array<Record<string, unknown>>;
   events?: Array<Record<string, unknown>>;
+};
+
+const emptyMessages: Record<Filter, { title: string; description: string }> = {
+  current: { title: '当前没有实例', description: '提交任务后，服务端分配的实例会显示在这里。' },
+  active: { title: '当前没有活动实例', description: '分配中、运行中和保留中的实例会显示在这里。' },
+  retained: { title: '当前没有保留实例', description: '已保留且可继续使用的机器会显示在这里。' },
+  history: { title: '还没有历史实例', description: '实例确认释放后，会保存在这里。' },
 };
 
 export interface InstanceCenterProps {
@@ -50,17 +57,22 @@ function label(instance: GpuInstance): string {
 function stateLabel(value?: string): string {
   return ({
     requested: '请求中', allocating: '分配中', ready: '就绪', busy: '运行中',
-    retained_idle: '保留空闲', releasing: '释放中', deleted: '已删除',
+    retained_idle: '保留空闲', releasing: '释放中', deleted: '已释放',
     unknown: '未知', cleanup_pending: '待清理', quarantined: '已隔离',
   } as Record<string, string>)[String(value || '')] || value || '状态未知';
 }
 
 function isHistory(instance: GpuInstance): boolean {
-  return ['deleted', 'unknown', 'cleanup_pending', 'quarantined'].includes(String(instance.state || '').toLowerCase());
+  return String(instance.state || '').toLowerCase() === 'deleted';
 }
 
 function isActive(instance: GpuInstance): boolean {
   return ['requested', 'allocating', 'ready', 'busy', 'retained_idle', 'releasing'].includes(String(instance.state || '').toLowerCase());
+}
+
+function isRetained(instance: GpuInstance): boolean {
+  const state = String(instance.state || '').toLowerCase();
+  return isActive(instance) && state !== 'releasing' && (state === 'retained_idle' || instance.retained_until != null);
 }
 
 function errorText(cause: unknown): string {
@@ -68,7 +80,7 @@ function errorText(cause: unknown): string {
 }
 
 export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, onRefresh }: InstanceCenterProps) {
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilter] = useState<Filter>('current');
   const [selectedId, setSelectedId] = useState('');
   const [detail, setDetail] = useState<Detail | null>(null);
   const [workbench, setWorkbench] = useState<GpuInstance | null>(null);
@@ -96,13 +108,14 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
     }
   }, [rows, selectedId]);
 
-  const activeCount = rows.filter((instance) => isActive(instance) && !isHistory(instance)).length;
-  const retainedCount = rows.filter((instance) => instance.state === 'retained_idle').length;
+  const currentCount = rows.filter((instance) => !isHistory(instance)).length;
+  const retainedCount = rows.filter(isRetained).length;
+  const historyCount = rows.length - currentCount;
   const filtered = rows.filter((instance) => {
-    if (filter === 'active') return isActive(instance) && !isHistory(instance);
-    if (filter === 'retained') return instance.state === 'retained_idle' || instance.retained_until != null;
+    if (filter === 'active') return isActive(instance);
+    if (filter === 'retained') return isRetained(instance);
     if (filter === 'history') return isHistory(instance);
-    return true;
+    return !isHistory(instance);
   });
 
   function keyFor(action: Action, id: string) {
@@ -184,26 +197,31 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
     {status && <p className={styles.status} role="status">{status}</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
     <div className={styles.summaryRow} aria-label="实例统计">
-      <div className={styles.summaryCell}><span className={styles.muted}>全部</span><b>{rows.length}</b></div>
-      <div className={styles.summaryCell}><span className={styles.muted}>活动</span><b>{activeCount}</b></div>
+      <div className={styles.summaryCell}><span className={styles.muted}>当前</span><b>{currentCount}</b></div>
       <div className={styles.summaryCell}><span className={styles.muted}>保留</span><b>{retainedCount}</b></div>
+      <div className={styles.summaryCell}><span className={styles.muted}>历史</span><b>{historyCount}</b></div>
     </div>
     <div className={styles.toolbar}>
       <div className={styles.filterGroup} role="group" aria-label="实例筛选">
-        {([['all', '全部'], ['active', '活动'], ['retained', '保留'], ['history', '历史']] as const).map(([value, text]) => <button key={value} type="button" className={styles.filterButton} aria-pressed={filter === value} onClick={() => setFilter(value)}>{text}</button>)}
+        {([['current', '当前'], ['active', '活动'], ['retained', '保留'], ['history', '历史']] as const).map(([value, text]) => <button key={value} type="button" className={styles.filterButton} aria-pressed={filter === value} onClick={() => setFilter(value)}>{text}</button>)}
       </div>
     </div>
-    {!filtered.length ? <div className={styles.empty}><strong>{rows.length ? '当前筛选没有实例' : '还没有实例'}</strong><span>{rows.length ? '切换筛选查看其他状态。' : '提交任务后，服务端分配的实例会显示在这里。'}</span></div> : <div className={styles.instanceMeta}>
+    {!filtered.length ? <div className={styles.empty}>
+      <strong>{emptyMessages[filter].title}</strong>
+      <span>{emptyMessages[filter].description}</span>
+      {filter === 'current' && historyCount > 0 && <button type="button" className={styles.buttonSecondary} onClick={() => setFilter('history')}>查看历史实例</button>}
+    </div> : <div className={styles.instanceMeta}>
       {filtered.map((instance) => {
         const id = instanceId(instance);
         const isSelected = selectedId === id;
-        const canMutate = !isHistory(instance) && instance.state !== 'releasing';
+        const canMutate = isActive(instance) && String(instance.state || '').toLowerCase() !== 'releasing';
+        const currentTask = instance.current_job_id ? shortId(instance.current_job_id) : '空闲';
         return <article className={styles.instanceCard} key={id}>
           <div className={styles.cardTop}><div className={styles.minWidth}><h3 title={id}>{label(instance)}</h3><p className={styles.muted}>{instance.account_alias_snapshot || (instance.account_id ? `账号 ${shortId(instance.account_id)}` : '账号未确认')} · {instance.provider || '运行时未确认'}</p></div><span className={`${styles.badge} ${instance.state === 'ready' || instance.state === 'busy' || instance.state === 'retained_idle' ? styles.good : ''}`}>{stateLabel(instance.state)}</span></div>
           <div className={styles.detailGrid}>
             <div className={styles.metaCell}><span>GPU</span><b>{gpuLabel(instance)}</b></div>
             <div className={styles.metaCell}><span>实例 ID</span><b title={id}>{shortId(id)}</b></div>
-            <div className={styles.metaCell}><span>当前任务</span><b title={instance.current_job_id || ''}>{instance.current_job_id ? shortId(instance.current_job_id) : '空闲'}</b></div>
+            <div className={styles.metaCell}><span>当前任务</span><b title={instance.current_job_id || ''}>{isHistory(instance) ? '已结束' : currentTask}</b></div>
             <div className={styles.metaCell}><span>保留截止</span><b>{formatTime(instance.retained_until || instance.idle_deadline_at)}</b></div>
           </div>
           <div className={styles.cardActions}>
@@ -223,6 +241,6 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
         </article>;
       })}
     </div>}
-    {confirm && <div className={styles.sheetBackdrop} role="presentation"><div className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="instance-confirm-title"><h3 id="instance-confirm-title">{confirm.action === 'stop' ? '确认停止实例？' : '确认保留实例？'}</h3><p className={styles.muted}>{confirm.action === 'stop' ? '服务端会将实例标记为释放中；远端删除完成前不会显示为已删除。' : '实例会保持可续用状态，并按服务端策略在空闲后释放。'}</p>{confirm.action === 'retain' && <label className={styles.field}>空闲保留分钟数<input type="number" min={0} max={30} value={retainMinutes} onChange={(event) => setRetainMinutes(Number(event.target.value) || 0)} /></label>}{error && <p className={styles.error} role="alert">{error}</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => { if (!busy) setConfirm(null); }}>取消</button><button type="button" className={confirm.action === 'stop' ? styles.buttonDanger : styles.button} disabled={Boolean(busy)} onClick={() => void submitAction()}>{busy ? '提交中…' : confirm.action === 'stop' ? '确认停止' : '确认保留'}</button></div></div></div>}
+    {confirm && <div className={styles.sheetBackdrop} role="presentation"><div className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="instance-confirm-title"><h3 id="instance-confirm-title">{confirm.action === 'stop' ? '确认停止实例？' : '确认保留实例？'}</h3><p className={styles.muted}>{confirm.action === 'stop' ? '停止请求提交后，实例进入释放中，远端释放完成后显示为已释放。' : '实例会保持可续用状态，并按服务端策略在空闲后释放。'}</p>{confirm.action === 'retain' && <label className={styles.field}>空闲保留分钟数<input type="number" min={0} max={30} value={retainMinutes} onChange={(event) => setRetainMinutes(Number(event.target.value) || 0)} /></label>}{error && <p className={styles.error} role="alert">{error}</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => { if (!busy) setConfirm(null); }}>取消</button><button type="button" className={confirm.action === 'stop' ? styles.buttonDanger : styles.button} disabled={Boolean(busy)} onClick={() => void submitAction()}>{busy ? '提交中…' : confirm.action === 'stop' ? '确认停止' : '确认保留'}</button></div></div></div>}
   </section>;
 }

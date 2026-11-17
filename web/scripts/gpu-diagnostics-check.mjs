@@ -2,18 +2,22 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { build } from 'esbuild';
 
-// Exercise real task-card rendering as well as the shared labels, without network or GPU calls.
+// Exercise task and instance rendering as well as the shared labels, without network or GPU calls.
 const { outputFiles } = await build({
   stdin: { contents: `
     import { createElement } from 'react';
     import { renderToStaticMarkup } from 'react-dom/server';
     import { TasksPanel } from './src/pages/JobsPage';
     import { JobHistoryDetails } from './src/components/JobHistoryDetails';
+    import { InstanceCenter } from './src/components/InstanceCenter';
     import { taskStatusNote } from './src/lib/job-detail-copy';
     import { gpuLabel, canRetainJobInstance } from './src/lib/gpu-label';
     import { rankColabGpuSpecs } from './src/lib/colab-check';
     module.exports = { gpuLabel, canRetainJobInstance, taskStatusNote, rankColabGpuSpecs,
       renderDetails(job) { return renderToStaticMarkup(createElement(JobHistoryDetails, { job, live: true })); },
+      renderInstances(instances) { return renderToStaticMarkup(createElement(InstanceCenter, {
+        instances, onContinue() {}, onOpenWorkbench() {}, onRefresh() {}
+      })); },
       render(job) {
       return renderToStaticMarkup(createElement(TasksPanel, {
         jobs: [job], error: '', refreshing: false,
@@ -22,11 +26,11 @@ const { outputFiles } = await build({
     }};
   `, resolveDir: process.cwd(), loader: 'tsx' },
   bundle: true, platform: 'node', format: 'cjs', write: false, outfile: 'gpu-check.cjs',
-  external: ['react', 'react-dom/server'], loader: { '.css': 'empty' },
+  external: ['react', 'react-dom/server'], loader: { '.css': 'empty' }, define: { 'import.meta.env': '{}' },
 });
 const module = { exports: {} };
 new Function('require', 'module', 'exports', outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
-const { gpuLabel, canRetainJobInstance, taskStatusNote, render, renderDetails } = module.exports;
+const { gpuLabel, canRetainJobInstance, taskStatusNote, render, renderDetails, renderInstances } = module.exports;
 const { rankColabGpuSpecs } = module.exports;
 const spec = (accelerator, shape = 'SHAPE_STANDARD', eligible = true, variant = 'VARIANT_GPU') => ({
   key: { variant, accelerator, shape }, eligible,
@@ -66,4 +70,20 @@ assert.match(renderDetails(waitingPrep), /准备模型权重/);
 assert.match(renderDetails(waitingPrep), /model-download 50%/);
 assert.match(renderDetails(waitingPrep), /HTTP 403/);
 assert.doesNotMatch(render({ ...waitingPrep, state: 'cancelled' }), /CPU 准备缓存|缓存完成后申请 GPU/);
-console.log('GPU evidence labels and task-card lifecycle checks passed');
+const released = { id: 'released', instance_label: 'released-machine', state: 'deleted', retained_until: '2099-01-01' };
+const instanceRows = [released, ...['busy', 'retained_idle', 'releasing', 'unknown', 'cleanup_pending', 'quarantined'].map((state) => ({
+  id: state, state, instance_label: `${state}-machine`,
+}))];
+const currentInstances = renderInstances(instanceRows);
+assert.match(currentInstances, /aria-pressed="true">当前<\/button>/);
+assert.doesNotMatch(currentInstances, /released-machine/);
+for (const row of instanceRows.slice(1)) assert.ok(currentInstances.includes(row.instance_label));
+for (const state of ['unknown', 'cleanup_pending', 'quarantined']) {
+  const markup = renderInstances([{ id: state, state }]);
+  const card = markup.slice(markup.indexOf('<article'));
+  assert.doesNotMatch(card, />续用<|>停止<|>保留<\/button>/);
+}
+assert.match(renderInstances([released]), /当前没有实例/);
+assert.match(renderInstances([released]), /查看历史实例/);
+assert.doesNotMatch(renderInstances([]), /查看历史实例/);
+console.log('GPU labels, task lifecycle and current-instance rendering checks passed');

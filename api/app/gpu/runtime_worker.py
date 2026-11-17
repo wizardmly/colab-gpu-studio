@@ -86,6 +86,10 @@ def _safe_error(exc: BaseException) -> str:
     return value[:1400] or exc.__class__.__name__
 
 
+def _log(message: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S', time.gmtime())} UTC] {message}", flush=True)
+
+
 def _atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -471,6 +475,7 @@ def _reviewed_custom_nodes(items: Any) -> list[dict]:
 
 def _install_custom_nodes(comfy: Path, items: list[dict], timeout: float) -> None:
     for item in items:
+        _log(f"安装 ComfyUI 节点 {item['dir']}")
         folder = comfy / "custom_nodes" / item["dir"]
         shutil.rmtree(folder, ignore_errors=True)
         folder.mkdir(mode=0o700, parents=True)
@@ -586,6 +591,7 @@ class _Stages:
         self.end()
         self._name, self._start = name, time.time()
         _status(self.root, "running", stage=name, timings=self.timings, stage_started=self._start)
+        _log(f"阶段 {name}")
 
     def end(self) -> None:
         if self._name:
@@ -597,6 +603,7 @@ def _checkout_comfy(comfy: Path, commit: str, timeout: float) -> None:
     if not COMMIT.fullmatch(commit):
         raise WorkerError("ComfyUI commit must be a fixed 40-character commit")
     comfy.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _log(f"获取 ComfyUI 源码 {commit[:12]}")
     _run(["git", "init", "-q"], cwd=comfy, timeout=30)
     _run(["git", "fetch", "-q", "--depth", "1", COMFY_REPO, commit], cwd=comfy, timeout=timeout)
     _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=comfy, timeout=timeout)
@@ -638,9 +645,11 @@ def _env_key(commit: str, timeout: float, custom_nodes: list[dict] | None = None
 
 
 def _pip_install(comfy: Path, timeout: float) -> None:
-    base = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-q"]
-    _run([*base, "-r", str(comfy / "requirements.txt")], cwd=comfy, timeout=timeout)
-    _run([*base, "huggingface_hub"], cwd=comfy, timeout=timeout)
+    _log("安装 ComfyUI 运行依赖")
+    base = [sys.executable, "-u", "-m", "pip", "install", "--disable-pip-version-check"]
+    _run([*base, "-r", str(comfy / "requirements.txt")], cwd=comfy, timeout=timeout, capture=False)
+    _run([*base, "huggingface_hub"], cwd=comfy, timeout=timeout, capture=False)
+    _log("ComfyUI 运行依赖安装完成")
 
 
 def _pack_env(comfy: Path, site: Path, before: dict[str, int], key: str, out: Path) -> dict:
@@ -766,11 +775,13 @@ def _restore_env(
             record["key"] = key
             entry = cache.lookup(target, None, None)
             if entry:
+                _log("从 Drive 恢复环境缓存")
                 archive = root / "env.tar.gz"
                 cache.fetch(entry, archive)
                 if _hash_file(archive)[0] != entry["appProperties"]["sha256"]:
                     raise WorkerError("env cache sha256 mismatch")
                 _unpack_env(archive, root, site)
+                _log("环境缓存解包完成，正在校验")
                 archive.unlink(missing_ok=True)
                 _verify_checkout(comfy, commit)
                 _verify_custom_nodes(comfy, custom_nodes or [])
@@ -778,6 +789,7 @@ def _restore_env(
                 return record
         except Exception as exc:  # noqa: BLE001 - a broken cache falls back to a normal install
             record["cache_error"] = _safe_error(exc)[:200]
+            _log(f"环境缓存恢复失败，开始重新安装 {_safe_error(exc)[:200]}")
             shutil.rmtree(comfy, ignore_errors=True)
     before = _site_state(site)
     _checkout_comfy(comfy, commit, timeout)
@@ -788,6 +800,7 @@ def _restore_env(
     if build and cache is not None and key:
         try:
             archive = root / "env.tar.gz"
+            _log("打包环境缓存")
             record.update(_pack_env(comfy, site, before, key, archive))
             sha256, md5 = _hash_file(archive)
             cache.store(target, archive, sha256, md5, archive.stat().st_size)
@@ -921,18 +934,25 @@ class DriveCache:
         temporary = destination.with_name(destination.name + ".part")
         digest = hashlib.md5(usedforsecurity=False)
         written = 0
+        last_report = time.monotonic()
+        _log(f"从 Drive 下载 {destination.name}，共 {entry['size']} 字节")
         url = f"{DRIVE_API}/files/{quote(entry['id'])}?alt=media"
         with self._open("GET", url, timeout=300) as response, temporary.open("wb") as out:
             for block in iter(lambda: response.read(8 * 1024 * 1024), b""):
                 out.write(block)
                 digest.update(block)
                 written += len(block)
+                if time.monotonic() - last_report >= 10:
+                    _log(f"Drive 下载 {destination.name}，{written}/{entry['size']} 字节")
+                    last_report = time.monotonic()
         if written != int(entry["size"]) or digest.hexdigest() != entry.get("md5Checksum"):
             temporary.unlink(missing_ok=True)
             raise WorkerError("drive cached file failed size/md5 check")
         os.replace(temporary, destination)
+        _log(f"Drive 下载完成 {destination.name}，{written} 字节")
 
     def store(self, target: str, source: Path, sha256: str, md5: str, size: int) -> None:
+        _log(f"上传 Drive 缓存 {target}，共 {size} 字节")
         parent, name = self._parent(target, create=True)
         stale = self._list(name, parent, False)
         metadata = {
@@ -956,6 +976,7 @@ class DriveCache:
         if urlsplit(location).hostname != "www.googleapis.com":
             raise WorkerError("drive upload session location is invalid")
         result: dict = {}
+        last_report = time.monotonic()
         with source.open("rb") as stream:
             offset = 0
             while offset < size:
@@ -984,10 +1005,14 @@ class DriveCache:
                             raise
                     time.sleep(2**attempt)
                 offset = end + 1
+                if time.monotonic() - last_report >= 10:
+                    _log(f"Drive 上传 {target}，{offset}/{size} 字节")
+                    last_report = time.monotonic()
         if int(result.get("size") or 0) != size or result.get("md5Checksum") != md5:
             raise WorkerError("drive upload verification failed")
         for old in stale:  # replace a stale copy only after the new one is verified
             self._json("PATCH", f"{DRIVE_API}/files/{quote(old['id'])}", {"trashed": True})
+        _log(f"Drive 缓存上传完成 {target}")
 
 
 def _drive_cache(payload: dict, folder_key: str = "folder_id") -> DriveCache | None:
@@ -1065,6 +1090,7 @@ def _restore_weights(
 
     def restore(item: dict, scratch: Path) -> dict:
         started = time.time()
+        _log(f"准备模型 {item['target']}，大小 {item.get('size') or '未知'} 字节")
         target = (models / item["target"]).resolve()
         if models not in target.parents:
             raise WorkerError("model target escaped Comfy models directory")
@@ -1077,8 +1103,10 @@ def _restore_weights(
                 entry = cache.lookup(item["target"], item["sha256"], item["size"])
                 if entry and not is_drive:
                     if prep:
+                        _log(f"模型已缓存 {item['target']}")
                         return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
                     cache.fetch(entry, target)
+                    _log(f"模型恢复完成 {item['target']}")
                     return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
                 if entry and is_drive:
                     cache.fetch(entry, target)
@@ -1113,6 +1141,7 @@ def _restore_weights(
         except Exception as exc:
             raise WorkerError("Hugging Face client is unavailable") from exc
         try:
+            _log(f"从 Hugging Face 下载 {item['repo_id']}/{item['filename']}")
             source = Path(
                 hf_hub_download(
                     item["repo_id"], item["filename"], revision=item["revision"], local_dir=str(scratch)
@@ -1122,6 +1151,7 @@ def _restore_weights(
             raise WorkerError(f"reviewed model download failed: {_safe_error(exc)[:200]}") from exc
         if not source.is_file():
             raise WorkerError("reviewed model download produced no file")
+        _log(f"模型下载完成，校验文件 {item['target']}")
         sha256, md5 = _hash_file(source)
         if sha256 != item["sha256"] or (item["size"] is not None and source.stat().st_size != item["size"]):
             raise WorkerError("downloaded model sha256 mismatch")
@@ -1138,6 +1168,7 @@ def _restore_weights(
             target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.move(str(source), str(target))
         record["seconds"] = round(time.time() - started, 1)
+        _log(f"模型准备完成 {item['target']}，耗时 {record['seconds']} 秒")
         return record
 
     with tempfile.TemporaryDirectory(prefix="ai-studio-weight-") as scratch:
@@ -1243,7 +1274,7 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
         process = None
         try:
             process = subprocess.Popen(
-                [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", "8188"],
+                [sys.executable, "-u", "main.py", "--listen", "127.0.0.1", "--port", "8188"],
                 cwd=comfy,
                 stdout=log,
                 stderr=subprocess.STDOUT,

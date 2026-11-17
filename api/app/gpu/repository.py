@@ -1186,6 +1186,7 @@ class Repository:
                 'requested_instance_id',
                 'account_alias_snapshot','selection_reason','allocation_key','attempt_id','runtime_id','request_id',
                 'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at',
+                'poll_last_error','runtime_logs',
                 'gpu_reported','gpu_diagnostics',
             }
             for k in transient:
@@ -1234,6 +1235,7 @@ class Repository:
                 "requested_instance_id", "account_alias_snapshot", "selection_reason", "allocation_key",
                 "attempt_id", "runtime_id", "request_id", "stage", "worker_timings", "output_bytes",
                 "started_at", "finished_at", "poll_retry_count", "poll_retry_at", "gpu_reported", "gpu_diagnostics",
+                "poll_last_error", "runtime_logs",
             }
             for k in transient:
                 data.pop(k, None)

@@ -1,10 +1,13 @@
 """Allowlisted public representations; never expose runtime connection handles."""
 
+from .gpu.runtime_logs import public_runtime_logs, runtime_log_text
+
+
 def public_asset(asset):
     return {k: v for k, v in asset.items() if k not in {"storage_key", "owner_id"}}
 
 
-def public_job(job):
+def public_job(job, *, include_runtime_logs=False):
     # Only explicit business fields are exposed. Runtime handles/connectionInfo never leave the server.
     keys = {
         "id",
@@ -58,8 +61,13 @@ def public_job(job):
         "gpu_reported",
         "retained_until",
         "selection_reason",
+        "poll_retry_count",
     }
     result = {k: v for k, v in job.items() if k in keys}
+    if include_runtime_logs:
+        result["runtime_logs"] = public_runtime_logs(job.get("runtime_logs"))
+        if job.get("poll_last_error"):
+            result["poll_last_error"] = runtime_log_text(str(job["poll_last_error"]))[:500]
     result["job_id"] = job["id"]
     result["mock"] = job.get("provider") == "mock"
     result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True

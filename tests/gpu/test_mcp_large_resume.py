@@ -45,7 +45,7 @@ def test_500mib_generated_reader_resumes_at_exact_sixty_percent(tmp_path, monkey
         value.artifact_store = LocalArtifactStore(settings.data_dir / 'assets' / 'artifacts')
         value._session = lambda *args: 'offline-session'
         def tool(name, args):
-            code = args['code'].replace('/content/ai-studio', str(remote))
+            code = args['code'].replace('/content/ai-studio', remote.as_posix())
             match = re.search(r'_f\.seek\((\d+)\)', code)
             if match:
                 offset = int(match[1])

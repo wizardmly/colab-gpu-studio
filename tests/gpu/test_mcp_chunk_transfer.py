@@ -65,7 +65,7 @@ def test_generated_chunk_reader_rejects_escape(tmp_path):
     root.mkdir()
     (root/'meta.json').write_text(json.dumps({'execution_id':execution,'artifacts':[{'path':'../secret'}]}))
     (tmp_path/'secret').write_bytes(b'private')
-    code=build_chunk_code(execution,0,0).replace('/content/ai-studio',str(tmp_path))
+    code=build_chunk_code(execution,0,0).replace('/content/ai-studio',tmp_path.as_posix())
     with pytest.raises(ValueError):
         exec(compile(code,'trusted-reader','exec'),{})
 
@@ -97,7 +97,7 @@ def test_generated_reader_returns_exact_bounded_bytes(tmp_path,capsys):
     content=b'x'*(1024**2)+b'end'
     (root/'result.mp4').write_bytes(content)
     (root/'meta.json').write_text(json.dumps({'execution_id':execution,'artifacts':[{'path':'result.mp4'}]}))
-    code=build_chunk_code(execution,0,1024**2).replace('/content/ai-studio',str(tmp_path))
+    code=build_chunk_code(execution,0,1024**2).replace('/content/ai-studio',tmp_path.as_posix())
     exec(compile(code,'trusted-reader','exec'),{})
     value=json.loads(capsys.readouterr().out)
     assert base64.b64decode(value['content'])==b'end'
@@ -135,7 +135,7 @@ def test_cli_to_mcp_reader_to_private_gallery(tmp_path,monkeypatch):
     value._session=lambda *args:'offline-session'
     def tool(name,args):
         output=io.StringIO()
-        code=args['code'].replace('/content/ai-studio',str(remote))
+        code=args['code'].replace('/content/ai-studio',remote.as_posix())
         with contextlib.redirect_stdout(output):
             exec(compile(code,'trusted-generated-code','exec'),{})
         return json.loads(output.getvalue())

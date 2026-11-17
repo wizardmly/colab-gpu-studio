@@ -254,6 +254,7 @@ export default function App() {
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [confirm, setConfirm] = useState<'submit' | 'stop' | null>(null);
   const [detail, setDetail] = useState<GpuJob | null>(null);
+  const [detailError, setDetailError] = useState('');
   const [viewer, setViewer] = useState<GalleryAsset | null>(null);
   const [againJob, setAgainJob] = useState<GpuJob | null>(null);
   const [loginRefresh, setLoginRefresh] = useState(0);
@@ -419,6 +420,30 @@ export default function App() {
       ++jobSequence.current;
     };
   }, [projectId, loggedIn]);
+
+  useEffect(() => {
+    setDetailError('');
+    if (!detail || !loggedIn || terminalStates.has(String(detail.state || '').toLowerCase())) return;
+    const jobId = detail.id;
+    let alive = true;
+    let timer: number;
+    const refreshDetail = async () => {
+      let finished = false;
+      try {
+        const next = await getGpuJob(jobId);
+        if (!alive) return;
+        setDetail((current) => current?.id === jobId ? next : current);
+        setDetailError('');
+        finished = terminalStates.has(String(next.state || '').toLowerCase());
+      } catch (cause) {
+        if (alive) setDetailError(apiMessage(cause));
+      } finally {
+        if (alive && !finished) timer = window.setTimeout(() => void refreshDetail(), 4000);
+      }
+    };
+    timer = window.setTimeout(() => void refreshDetail(), 4000);
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [detail?.id, loggedIn]);
 
   useEffect(() => {
     setReferenceImages([]);
@@ -1011,7 +1036,7 @@ export default function App() {
             </div>
             <dl className={styles.kv}>
               <dt>状态</dt><dd>{jobStateLabel(detail.state)}</dd>
-              <dt>运行方式</dt><dd>{detail.provider === 'mock' ? '离线模拟' : detail.provider === 'colab' ? 'Colab GPU' : shown(detail.provider)}</dd>
+              <dt>运行方式</dt><dd>{detail.provider === 'mock' ? '离线模拟' : detail.provider === 'colab' ? detail.prep ? 'Colab CPU（缓存准备）' : 'Colab GPU' : shown(detail.provider)}</dd>
               <dt>创建时间</dt><dd>{formatInstanceTime(detail.created_at)}</dd>
             </dl>
             <p className="muted small">{taskStatusNote(detail)}</p>
@@ -1024,7 +1049,8 @@ export default function App() {
                 </p>) : <p className="muted">还没有开始执行</p>}
               </div>
             </details>}
-            {(detail.timings || detail.timing_details || detail.logs || detail.events) ? <JobHistoryDetails job={detail} /> : null}
+            {detailError && <p className="status error" role="status">日志刷新失败 · {detailError}</p>}
+            <JobHistoryDetails job={detail} live={!terminalStates.has(String(detail.state || '').toLowerCase())} />
             {stageSecondsTotal(jobDetailTimings(detail)) ? <p className="muted small">各阶段相加约 {stageSecondsTotal(jobDetailTimings(detail))}。阶段按秒独立计时，可能重叠，不是工作流发布又额外等了这么久。</p> : null}
             {detail.resolved_params ? (
               <details className="foldable">

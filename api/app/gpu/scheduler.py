@@ -25,6 +25,7 @@ from .google import GoogleError
 from .mcp import MCPError
 from .newgpu.executor_plugins import TrustedExecutorAdapter
 from .prep import PREP_SPEC_KEY, cache_key, create_prep_job, prep_idempotency_key, prep_jobs_for
+from .runtime_logs import public_runtime_logs, runtime_log_text
 
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 ACTIVE_STATES = {
@@ -1078,13 +1079,23 @@ class Scheduler:
 
             retries = int(job.get('poll_retry_count') or 0) + 1
             if isinstance(exc, MCPTransient) and retries <= 5:
-                return self._set_state(job, 'running', 'GPU connection interrupted; retry pending',
-                    poll_retry_count=retries, poll_retry_at=self.clock() + min(2**retries, 30))
+                delay = min(2**retries, 30)
+                reason = runtime_log_text(str(exc))[:500]
+                return self._set_state(
+                    job, 'running', f'GPU 状态查询暂时失败，{delay} 秒后重试（{retries}/5）：{reason}',
+                    poll_retry_count=retries, poll_retry_at=self.clock() + delay, poll_last_error=reason,
+                )
             return self._begin_failure(job, "gpu_poll_failed", self._safe_error(exc))
         if job.get('poll_retry_count') or job.get('poll_retry_at'):
-            job = self._set_state(job, 'running', 'GPU connection recovered', poll_retry_count=0, poll_retry_at=0)
+            job = self._set_state(
+                job, 'running', 'GPU 状态查询已恢复',
+                poll_retry_count=0, poll_retry_at=0, poll_last_error=None,
+            )
         if result.get('execution_id') not in {None,job.get('execution_id')}:
             return self._begin_failure(job,'gpu_execution_id_mismatch','poll execution identity mismatch')
+        runtime_logs = public_runtime_logs(result.get("runtime_logs"))
+        if runtime_logs:
+            job = self._update("jobs", job["id"], {"runtime_logs": runtime_logs}, job.get("owner_id"))
         if result.get("gpu_diagnostics") and not job.get("gpu_reported"):
             job = self.store.record_gpu_diagnostics(job, result["gpu_diagnostics"]) or job
         state = result.get("state")

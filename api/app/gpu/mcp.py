@@ -23,6 +23,7 @@ import httpx
 from app.security import decrypt_secret
 
 from .google import GoogleService
+from .runtime_logs import MAX_LOG_BYTES
 from .runtime_worker import MAX_OUTPUT_BYTES
 
 log = logging.getLogger("studio.mcp")
@@ -120,7 +121,7 @@ else:
         _payload.write_bytes(_base64.b64decode({payload_b64!r}))
         _marker.write_text(_json.dumps({{"execution_id": _execution_id, "state": "reserved"}}, sort_keys=True), encoding="utf-8")
         _log_handle = _log.open("ab")
-        _proc = _subprocess.Popen([_sys.executable, str(_worker), str(_payload)], cwd=str(_dir),
+        _proc = _subprocess.Popen([_sys.executable, "-u", str(_worker), str(_payload)], cwd=str(_dir),
                                   stdin=_subprocess.DEVNULL, stdout=_log_handle, stderr=_subprocess.STDOUT,
                                   shell=False, start_new_session=True)
         _log_handle.close()
@@ -137,6 +138,7 @@ def build_poll_code(execution_id: str) -> str:
     return f"""# Colab GPU Studio fixed read-only recovery probe.
 import base64 as _base64
 import json as _json
+import time as _time
 from pathlib import Path as _Path
 
 _execution_id = _base64.b64decode({encoded!r}).decode("ascii")
@@ -194,6 +196,22 @@ if _result.get('state') in ('running', 'starting', 'reserved'):
             if _dead:
                 _result.update({{'state':'failed', 'error_code':'gpu_worker_exited',
                     'error_message':'Worker process exited before completion'}})
+_logs = {{"collected_at": _time.time()}}
+for _name, _filename in (("worker", "worker.log"), ("comfyui", "comfy.log")):
+    _log_path = _dir / _filename
+    try:
+        if _log_path.is_symlink():
+            continue
+        with _log_path.open("rb") as _stream:
+            _size = _stream.seek(0, 2)
+            _stream.seek(max(0, _size - {MAX_LOG_BYTES}))
+            _raw = _stream.read({MAX_LOG_BYTES})
+        if _size > {MAX_LOG_BYTES}:
+            _raw = _raw.partition(b"\\n")[2]
+        _logs[_name] = _raw.decode("utf-8", "replace")
+    except OSError:
+        pass
+_result["runtime_logs"] = _logs
 print(_json.dumps(_result, separators=(",", ":")))
 """
 
@@ -440,6 +458,7 @@ class MCPGPUExecutor:
         return json.loads(raw[offsets[0] : json_stop].decode("utf-8"))
 
     def _refresh_tunnel_proxy(self, lease: dict) -> tuple[str, str]:
+        lease = self.store.get("leases", lease["id"], self.owner_id) or lease
         url = lease.get("proxy_url")
         enc_tok = lease.get("encrypted_proxy_token")
         exp = float(lease.get("proxy_token_expires_at") or 0)
@@ -482,10 +501,16 @@ class MCPGPUExecutor:
                 if r.status_code == 404:
                     kernel_id = None
                 elif r.status_code >= 400:
+                    if r.status_code in (401, 403):
+                        self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
                     raise MCPTransient(f"Colab kernel inspect HTTP {r.status_code}")
             if not kernel_id:
                 rk = self.client.get(f"{proxy_url}/api/kernels", headers=headers, params=auth_params)
-                existing = rk.json() if rk.status_code == 200 else None
+                if rk.status_code >= 400:
+                    if rk.status_code in (401, 403):
+                        self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
+                    raise MCPTransient(f"Colab kernel list HTTP {rk.status_code}")
+                existing = rk.json()
                 if isinstance(existing, list) and existing:
                     kernel_id = existing[0].get("id")
                 else:
@@ -493,6 +518,8 @@ class MCPGPUExecutor:
                         f"{proxy_url}/api/kernels", json={"name": "python3"}, headers=headers, params=auth_params
                     )
                     if rc.status_code >= 400:
+                        if rc.status_code in (401, 403):
+                            self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
                         raise MCPTransient(f"Colab kernel start HTTP {rc.status_code}")
                     kernel_id = rc.json().get("id")
                 if not isinstance(kernel_id, str) or not kernel_id:
@@ -580,6 +607,11 @@ class MCPGPUExecutor:
         except Exception as exc:
             if isinstance(exc, (MCPError, MCPTransient)):
                 raise
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if type(status) is int:
+                if status in (401, 403):
+                    self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
+                raise MCPTransient(f"Colab 隧道 WebSocket 建立失败（HTTP {status}）") from exc
             raise MCPTransient(f"Colab 隧道 WebSocket 异常（{type(exc).__name__}）") from exc
         if error_info is not None:
             return {"isError": True, "executionError": error_info, "stdout": "".join(stdout_parts)}
@@ -679,7 +711,11 @@ class MCPGPUExecutor:
             raise MCPError("Colab状态执行标识不匹配")
         state = result.get("state", "running")
         # The scheduler cleans gpu_diagnostics before saving it.
-        evidence = {"execution_id": execution_id, "gpu_diagnostics": result.get("gpu_diagnostics")}
+        evidence = {
+            "execution_id": execution_id,
+            "gpu_diagnostics": result.get("gpu_diagnostics"),
+            "runtime_logs": result.get("runtime_logs"),
+        }
         if state in {"reserved", "starting", "running", None}:
             stage = result.get("stage")
             return {

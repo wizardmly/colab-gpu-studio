@@ -556,7 +556,7 @@ def jobs(request: Request, project_id: str | None = None, user=Depends(current_u
 def get_job(job_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
     repo = Repository(st)
     job = own(repo, "jobs", job_id, user)
-    result = public_job(job)
+    result = public_job(job, include_runtime_logs=True)
     result["events"] = [e for e in repo.list("events", user["id"]) if e.get("job_id") == job_id][::-1]
     result["logs"] = result["events"]
     now = time.time()

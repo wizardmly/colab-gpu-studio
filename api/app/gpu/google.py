@@ -456,23 +456,64 @@ class GoogleService:
         )
         return new_access
 
+    def _credential_client_id(self, row: dict) -> str:
+        explicit = str(row.get("client_id") or "").strip()
+        if explicit:
+            return explicit
+        owner = row.get("owner_id") or self.owner_id
+        account_id = row.get("account_id")
+        if not account_id and self.account_id is not None:
+            database = self._client_config(owner, None)
+            if database:
+                return database["client_id"]
+            return os.getenv("GPU_GOOGLE_CLIENT_ID", "").strip()
+        try:
+            return self._config(owner, account_id)[0]
+        except GoogleConfigurationError:
+            return ""
+
+    def _has_other_active_grant_credentials(self, target_row: dict) -> bool:
+        """Return whether another active credential shares the same Google OAuth grant."""
+        owner = target_row.get("owner_id") or self.owner_id
+        target_cid = self._credential_client_id(target_row)
+        for row in self._list("credentials", owner):
+            if row.get("id") == target_row.get("id"):
+                continue
+            if row.get("provider", "google") != "google" or row.get("purpose") not in _PURPOSES:
+                continue
+            if row.get("revoked"):
+                continue
+            if not (row.get("encrypted_refresh_token") or row.get("encrypted_access_token")):
+                continue
+            if not target_cid or self._credential_client_id(row) == target_cid:
+                return True
+        return False
+
     def disconnect(self, purpose: str) -> bool:
         if purpose not in _PURPOSES:
             raise ValueError("Google OAuth purpose无效")
         credential = self._credential(purpose, account_id=self.account_id)
         if not credential:
             return False
+        shared_grant = self._has_other_active_grant_credentials(credential)
         remote_confirmed = False
-        try:
-            refresh = decrypt_secret(credential.get("encrypted_refresh_token", ""))
-            token = refresh or decrypt_secret(credential.get("encrypted_access_token", ""))
-            response = self.client.post(REVOKE_URL, data={"token": token})
-            remote_confirmed = 200 <= response.status_code < 300
-        except (httpx.HTTPError, KeyError, TypeError, ValueError):
-            # Do not include the token or upstream response body in any error.
-            remote_confirmed = False
+        if not shared_grant:
+            try:
+                refresh = decrypt_secret(credential.get("encrypted_refresh_token", ""))
+                token = refresh or decrypt_secret(credential.get("encrypted_access_token", ""))
+                response = self.client.post(REVOKE_URL, data={"token": token})
+                remote_confirmed = 200 <= response.status_code < 300
+            except (httpx.HTTPError, KeyError, TypeError, ValueError):
+                # Do not include the token or upstream response body in any error.
+                remote_confirmed = False
+        disconnect_status = (
+            "local_only_shared_client"
+            if shared_grant
+            else ("confirmed" if remote_confirmed else "remote_unconfirmed")
+        )
         # Remove local bearer material and keep a sanitized tombstone that records
-        # whether Google confirmed the revoke.
+        # whether Google confirmed the revoke (or if remote revoke was skipped to
+        # protect sibling credentials sharing the same OAuth client_id).
         self._update(
             "credentials",
             credential["id"],
@@ -482,7 +523,7 @@ class GoogleService:
                 "encrypted_refresh_token": None,
                 "expires_at": 0,
                 "disconnect_remote_confirmed": remote_confirmed,
-                "disconnect_status": "confirmed" if remote_confirmed else "remote_unconfirmed",
+                "disconnect_status": disconnect_status,
             },
             self.owner_id,
         )

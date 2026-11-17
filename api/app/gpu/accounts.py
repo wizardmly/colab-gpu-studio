@@ -244,12 +244,12 @@ class AccountService:
 
     def list(self) -> list[dict]:
         self._ensure_default()
-        return [self._public(row) for row in self._rows("accounts")]
+        return [self._public(row) for row in self._rows("accounts") if not row.get("removed")]
 
     def require(self, account_id: str) -> dict:
         self._ensure_default()
         row = self._get(account_id)
-        if not row:
+        if not row or row.get("removed"):
             raise APIError("NOT_FOUND", "Google账号不存在或不属于当前用户", 404)
         return row
 
@@ -324,22 +324,35 @@ class AccountService:
         ]
         if active:
             raise APIError("ACCOUNT_HAS_ACTIVE_RESOURCES", "账号仍有活动资源，停止并确认收尾后再断开", 409)
+        if any(
+            (r.get("account_id") or r.get("id")) != account_id
+            and not r.get("removed")
+            and r.get("drive_account_id") == account_id
+            for r in self._rows("accounts")
+        ):
+            raise APIError("ACCOUNT_IN_USE_AS_DRIVE", "仍有其他账号复用该账号的 Drive 存储，请先切换后再解除连接", 409)
         credential_rows = [row for row in self._rows("credentials") if row.get("account_id") == account_id]
         if os.getenv("STUDIO_OFFLINE_TEST") == "1":
             for credential in credential_rows:
                 self.repo.update("credentials", credential["id"], {"revoked": True, "encrypted_access_token": None, "encrypted_refresh_token": None, "disconnect_status": "offline_unconfirmed"}, self.owner_id)
             result = {"account_id": account_id, "disconnected": False, "remote_confirmed": False, "status": "remote_unconfirmed"}
-            return self._save_operation(idempotency_key, body, result, operation="disconnect")
-        from .google import GoogleService
+        else:
+            from .google import GoogleService
 
-        service = GoogleService(self.repo, self.owner_id, account_id=account_id)
-        remote_confirmed = True
-        for purpose in ("colab", "drive"):
-            had_credential = any(item.get("purpose") == purpose and not item.get("revoked") for item in credential_rows)
-            outcome = service.disconnect(purpose)
-            if had_credential and not outcome:
-                remote_confirmed = False
-        result = {"account_id": account_id, "disconnected": remote_confirmed, "remote_confirmed": remote_confirmed, "status": "confirmed" if remote_confirmed else "remote_unconfirmed"}
+            service = GoogleService(self.repo, self.owner_id, account_id=account_id)
+            remote_confirmed = True
+            for purpose in ("colab", "drive"):
+                had_credential = any(item.get("purpose") == purpose and not item.get("revoked") for item in credential_rows)
+                outcome = service.disconnect(purpose)
+                if had_credential and not outcome:
+                    remote_confirmed = False
+            result = {"account_id": account_id, "disconnected": remote_confirmed, "remote_confirmed": remote_confirmed, "status": "confirmed" if remote_confirmed else "remote_unconfirmed"}
+        self.repo.update(
+            "accounts",
+            account_id,
+            {"removed": True, "enabled": False, "allow_allocation": False, "drive_account_id": None},
+            self.owner_id,
+        )
         return self._save_operation(idempotency_key, body, result, operation="disconnect")
 
     def runtimes(self, account_id: str) -> list[dict]:

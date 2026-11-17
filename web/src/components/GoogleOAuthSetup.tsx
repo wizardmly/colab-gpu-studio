@@ -79,7 +79,7 @@ export function GoogleOAuthSetup({ onConfigured }: { onConfigured: () => void })
       const next = await saveGoogleClientConfig(body);
       if (saveId !== saveRequest.current || targetRequestId !== configRequest.current) return;
       setConfig(next); setClientId(''); setClientSecret(''); setWebClient(null); setConfirmed(false);
-      setNotice('应用配置已加密保存。下一步点击“连接 Google Colab”和“连接 Google Drive”完成本人授权；不会自动开 GPU。');
+      setNotice('应用配置已加密保存。请在账号区域点击“连接 Google 账号”，依次完成 Colab 和 Drive 授权。');
       onConfigured();
     } catch (cause) {
       if (saveId === saveRequest.current && targetRequestId === configRequest.current) setError(apiMessage(cause));
@@ -100,7 +100,7 @@ export function GoogleOAuthSetup({ onConfigured }: { onConfigured: () => void })
       <li>在“API 和服务 → 库”启用 Google Drive API，并按 Colab 官方文档启用 Colab API。</li>
       <li>配置 Google Auth Platform：应用名称、受众选“外部”；测试模式把自己的 Google 邮箱加入测试用户。</li>
       <li>在“客户端”创建 OAuth 客户端，类型选“Web 应用”，填入下方回调地址，下载客户端 JSON。</li>
-      <li>在这里导入 JSON 并保存，再点击下面两个 Google 连接按钮，使用有 Colab 权益的账户授权。</li>
+      <li>在这里导入 JSON 并保存，再到账号区域点击“连接 Google 账号”，使用有 Colab 权益的账号依次连接 Colab 与 Drive。</li>
     </ol>
     <label className="field">授权回调地址<input aria-label="Google OAuth 回调地址" readOnly value={callback} onFocus={(event) => event.target.select()} /></label>
     <button className="button secondary" type="button" onClick={async () => { try { await navigator.clipboard.writeText(callback); setNotice('已复制回调地址'); } catch { setNotice('请点击回调地址输入框，全选后复制'); } }}>复制回调地址</button>

@@ -215,7 +215,7 @@ function NewProjectDialog({
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
-  const [tab, setTab] = useState<Tab>('创作');
+  const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).get('google') === 'connected' ? '设置' : '创作');
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [showProjectSheet, setShowProjectSheet] = useState(false);

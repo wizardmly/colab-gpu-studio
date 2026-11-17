@@ -795,7 +795,7 @@ def google_callback(code: str, state: str, st=Depends(get_store)):
     from .gpu.google import GoogleService
 
     GoogleService(Repository(st), None).callback(code, state)
-    return RedirectResponse("/?google=connected", status_code=303)
+    return RedirectResponse("/?google=connected#google-accounts", status_code=303)
 
 
 @router.post("/auth/google/disconnect")

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { apiMessage, createGoogleAccount, disconnectGoogleAccount, getGoogleAccounts, startGoogleAccountAuth, updateGoogleAccount } from '../lib/gpu-api';
+import { apiMessage, createGoogleAccount, disconnectGoogleAccount, getGoogleAccounts, getGoogleClientConfig, startGoogleAccountAuth, updateGoogleAccount } from '../lib/gpu-api';
 import styles from './v020.module.css';
 
 export type AccountStatus = 'connected' | 'needs_reauth' | 'disabled' | 'error' | string;
@@ -84,6 +84,7 @@ export interface GpuInstanceEvent {
 
 export interface AccountDirectoryApi {
   getGpuAccounts: () => Promise<GpuAccount[]>;
+  getGpuAccountConfig: (accountId?: string) => Promise<{ configured?: boolean }>;
   createGpuAccount: (body: { alias: string }, idempotencyKey: string) => Promise<GpuAccount>;
   updateGpuAccount: (accountId: string, patch: Record<string, unknown>, idempotencyKey: string) => Promise<GpuAccount>;
   disconnectGpuAccount: (accountId: string, idempotencyKey: string, confirmActiveStop: boolean) => Promise<unknown>;
@@ -95,12 +96,13 @@ export interface AccountDirectoryProps {
   accounts?: GpuAccount[];
   api?: Partial<AccountDirectoryApi>;
   onAccountsChange?: (accounts: GpuAccount[]) => void;
+  onSetupRequested?: () => void;
 }
 
 let idSequence = 0;
-function newIdempotencyKey(prefix: string): string {
+function newIdempotencyKey(): string {
   idSequence += 1;
-  return `${prefix}-${Date.now().toString(36)}-${idSequence.toString(36)}`;
+  return `account-${Date.now().toString(36)}-${idSequence.toString(36)}`;
 }
 
 function listPayload(value: unknown): GpuAccount[] {
@@ -120,6 +122,7 @@ function accountPayload(value: unknown): GpuAccount {
 
 const defaultAccountApi: AccountDirectoryApi = {
   getGpuAccounts: async () => listPayload(await getGoogleAccounts()),
+  getGpuAccountConfig: getGoogleClientConfig,
   createGpuAccount: async (body, key) => accountPayload(await createGoogleAccount(body, key)),
   updateGpuAccount: async (accountId, patch, key) => accountPayload(await updateGoogleAccount(accountId, patch as Parameters<typeof updateGoogleAccount>[1], key)),
   disconnectGpuAccount: (accountId, key, _confirmActiveStop) => disconnectGoogleAccount(accountId, key),
@@ -134,6 +137,20 @@ function authStatus(account: GpuAccount, purpose: 'colab' | 'drive'): Authorizat
 
 function statusLabel(status: string): string {
   return ({ connected: '已连接', needs_reauth: '需重新授权', disabled: '已停用', error: '错误', not_connected: '未连接' } as Record<string, string>)[status] || status;
+}
+
+function nextAuthorization(account: GpuAccount): 'colab' | 'drive' | null {
+  if (authStatus(account, 'colab') !== 'connected') return 'colab';
+  if (authStatus(account, 'drive') !== 'connected') return 'drive';
+  return null;
+}
+
+function connectionHint(account: GpuAccount): string {
+  if (account.enabled === false) return '启用此账号后可继续连接。';
+  if (authStatus(account, 'colab') !== 'connected') return '连接 Colab，授权工作台使用这个 Google 账号的算力。';
+  if (authStatus(account, 'drive') !== 'connected') return 'Colab 已连接，接下来连接 Drive 保存文件。独立连接 Drive 时请选择同一个 Google 账号，也可在下方复用其他账号的 Drive。';
+  if (!account.allow_allocation) return '授权已保存，开启“允许分配”后可用于新任务。';
+  return 'Colab 与 Drive 已连接，可以使用此账号运行任务。';
 }
 
 function activeCount(account: GpuAccount): number {
@@ -159,7 +176,7 @@ function safeAuthRedirect(value: { authorization_url?: string } | string): strin
   }
 }
 
-export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsChange }: AccountDirectoryProps) {
+export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsChange, onSetupRequested }: AccountDirectoryProps) {
   const accountApi = useMemo(() => ({ ...defaultAccountApi, ...api }), [api]);
   const [accounts, setAccounts] = useState<GpuAccount[]>(suppliedAccounts || []);
   const [alias, setAlias] = useState('');
@@ -170,6 +187,9 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const directoryRef = useRef<HTMLElement>(null);
   const keyRef = useRef<Record<string, string>>({});
   const loadRef = useRef(false);
 
@@ -181,13 +201,17 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
   const refresh = useCallback(async () => {
     if (loadRef.current) return;
     loadRef.current = true;
+    setLoading(true);
     setError('');
     try {
       replaceAccounts(await accountApi.getGpuAccounts());
+      setLoaded(true);
     } catch (cause) {
+      setLoaded(false);
       setError(apiMessage(cause));
     } finally {
       loadRef.current = false;
+      setLoading(false);
     }
   }, [accountApi, replaceAccounts]);
 
@@ -195,25 +219,60 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
     if (suppliedAccounts) setAccounts(suppliedAccounts);
   }, [suppliedAccounts]);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (loaded && window.location.hash === '#google-accounts') {
+      directoryRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [loaded]);
 
   function keyFor(operation: string): string {
-    return keyRef.current[operation] ||= newIdempotencyKey(operation);
+    return keyRef.current[operation] ||= newIdempotencyKey();
   }
   function finishKey(operation: string) { delete keyRef.current[operation]; }
 
   async function createAccount(event: FormEvent) {
     event.preventDefault();
-    const nextAlias = alias.trim();
-    if (!nextAlias || busy) return;
-    const operation = 'account-create';
-    setBusy(operation); setError(''); setStatus('正在创建账号目录…');
+    if (busy || loading || !loaded) return;
+    setBusy('account-connect'); setError(''); setStatus('正在查找已有连接…');
+    let redirecting = false;
     try {
-      const created = await accountApi.createGpuAccount({ alias: nextAlias }, keyFor(operation));
-      replaceAccounts([...accounts, created]);
-      setAlias(''); finishKey(operation); setStatus(`已创建「${created.alias || nextAlias}」，请分别授权 Colab 与 Drive。`);
+      // Read the durable directory again so a lost creation response or a page
+      // reload can resume an existing record before creating another one.
+      const current = await accountApi.getGpuAccounts();
+      replaceAccounts(current);
+      let nextAlias = alias.trim();
+      let account = nextAlias ? current.find((item) => item.alias.toLocaleLowerCase() === nextAlias.toLocaleLowerCase()) : undefined;
+      if (!account || (account.enabled !== false && nextAuthorization(account))) {
+        const config = await accountApi.getGpuAccountConfig(account?.account_id);
+        if (!config.configured) {
+          setStatus('首次连接请先完成 Google 应用配置，然后回到这里连接账号。');
+          onSetupRequested?.();
+          return;
+        }
+      }
+      if (!account) {
+        if (!nextAlias) {
+          nextAlias = '主账号';
+          let suffix = 2;
+          while (current.some((item) => item.alias === nextAlias)) nextAlias = `Google 账号 ${suffix++}`;
+        }
+        const operation = `account-create-${nextAlias}`;
+        setAlias(nextAlias);
+        account = await accountApi.createGpuAccount({ alias: nextAlias }, keyFor(operation));
+        replaceAccounts([...current, account]);
+        finishKey(operation);
+      }
+      setAlias(account.alias);
+      setStatus(`「${account.alias}」${connectionHint(account)}`);
+      if (account.enabled === false) return;
+      const purpose = nextAuthorization(account);
+      if (purpose) {
+        await redirectToAuthorization(account, purpose);
+        redirecting = true;
+      }
     } catch (cause) {
-      setError(apiMessage(cause)); setStatus('创建未确认；再次重试会复用同一幂等键。');
-    } finally { setBusy(null); }
+      setError(apiMessage(cause)); setStatus('连接尚未完成。请在已有账号卡片中继续连接，也可刷新列表后重试。');
+    } finally { if (!redirecting) setBusy(null); }
   }
 
   async function updateAccount(account: GpuAccount, patch: Record<string, unknown>, operation: string, success: string) {
@@ -228,18 +287,22 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
     } finally { setBusy(null); }
   }
 
-  async function authorize(account: GpuAccount, purpose: 'colab' | 'drive') {
+  async function redirectToAuthorization(account: GpuAccount, purpose: 'colab' | 'drive') {
     const operation = `account-auth-${account.account_id}-${purpose}`;
+    const response = await accountApi.startGpuAccountAuth(account.account_id, purpose, keyFor(operation));
+    const target = safeAuthRedirect(response);
+    if (!target) throw new Error('授权地址无效，请稍后重试。');
+    finishKey(operation);
+    window.location.assign(target);
+  }
+
+  async function authorize(account: GpuAccount, purpose: 'colab' | 'drive') {
     if (busy) return;
-    setBusy(operation); setError(''); setStatus(`正在准备 ${purpose === 'colab' ? 'Colab' : 'Drive'} 授权…`);
+    setBusy(`account-auth-${account.account_id}-${purpose}`); setError(''); setStatus(`正在准备 ${purpose === 'colab' ? 'Colab' : 'Drive'} 授权…`);
     try {
-      const response = await accountApi.startGpuAccountAuth(account.account_id, purpose, keyFor(operation));
-      const target = safeAuthRedirect(response);
-      if (!target) throw new Error('授权地址无效或未返回；没有打开外部地址。');
-      finishKey(operation);
-      window.location.assign(target);
+      await redirectToAuthorization(account, purpose);
     } catch (cause) {
-      setError(apiMessage(cause)); setStatus('授权尚未开始；再次重试会复用同一幂等键。'); setBusy(null);
+      setError(apiMessage(cause)); setStatus('连接尚未完成，请在此账号下重试。首次使用请先完成下方 Google 应用配置。'); setBusy(null);
     }
   }
 
@@ -258,23 +321,38 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
   }
 
   return (
-    <section className={styles.directory} aria-label="Google 账号目录">
+    <section ref={directoryRef} id="google-accounts" className={styles.directory} aria-label="Google 账号目录" aria-busy={loading}>
       <header className={styles.sectionHeader}>
-        <div><p className={styles.eyebrow}>设置 · 单一账号入口</p><h2>账号目录</h2></div>
-        <button type="button" className={styles.iconButton} onClick={() => void refresh()} disabled={Boolean(busy)} aria-label="刷新账号"><RefreshCw size={16} aria-hidden /></button>
+        <div><h2>已保存的 Google 账号</h2></div>
+        <button type="button" className={styles.iconButton} onClick={() => void refresh()} disabled={Boolean(busy) || loading} aria-label="刷新账号"><RefreshCw size={16} aria-hidden /></button>
       </header>
-      <p className={styles.muted}>每个账号的 Colab 与 Drive 授权分开管理。只会使用当前 owner 已授权、允许分配且预算可用的账号。</p>
+      <p className={styles.muted}>Colab 用于运行算力，Drive 用于保存文件。首次连接需分别确认权限，之后会复用已保存的授权。</p>
+      <p className={styles.muted}>显示名称方便你区分账号，例如 Jake-Ultra。实际使用的 Google 账号在授权页面选择。</p>
       {status && <p className={styles.status} role="status">{status}</p>}
       {error && <p className={styles.error} role="alert">{error}</p>}
 
-      <form className={styles.createRow} onSubmit={createAccount}>
-        <label className={styles.srOnly} htmlFor="new-gpu-account-alias">新账号别名</label>
-        <input id="new-gpu-account-alias" value={alias} onChange={(event) => setAlias(event.target.value)} placeholder="例如：主账号" maxLength={80} />
-        <button type="submit" className={styles.button} disabled={!alias.trim() || Boolean(busy)}>新增账号</button>
+      <form onSubmit={createAccount}>
+        <label className={styles.fieldLabel} htmlFor="new-gpu-account-alias">{accounts.length ? '其他账号的显示名称（可选）' : '显示名称（可选）'}</label>
+        <div className={styles.createRow}>
+          <input id="new-gpu-account-alias" value={alias} onChange={(event) => setAlias(event.target.value)} placeholder="例如 Jake-Ultra，留空自动命名" maxLength={80} disabled={Boolean(busy) || loading || !loaded} />
+          <button type="submit" className={styles.button} disabled={Boolean(busy) || loading || !loaded}>
+            {busy === 'account-connect' ? '连接中…' : accounts.length ? '连接其他账号' : '连接 Google 账号'}
+          </button>
+        </div>
       </form>
+      <details>
+        <summary>刷新或更新后找不到授权？</summary>
+        <p className={styles.muted}>先刷新列表，查看原账号的 Colab 与 Drive 状态。服务器需要沿用原有数据和加密配置，才能恢复已保存的授权。</p>
+      </details>
 
       {!accounts.length ? (
-        <div className={styles.empty}><strong>还没有账号目录</strong><span>先新增别名，再分别完成 Colab / Drive 授权。</span></div>
+        <div className={styles.empty} role="status">
+          {loading ? <strong>正在读取已保存的账号与授权…</strong> : !loaded ? (
+            <><strong>账号列表读取失败</strong><span>请点击右上角刷新，重新读取已保存的连接。</span></>
+          ) : (
+            <><strong>还没有保存的 Google 账号</strong><span>点击“连接 Google 账号”开始，先连接 Colab，再连接 Drive。</span></>
+          )}
+        </div>
       ) : <div className={styles.stack}>
         {accounts.map((account) => {
           const active = activeCount(account);
@@ -292,11 +370,23 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
                 <span className={`${styles.badge} ${account.status === 'connected' ? styles.good : account.status === 'error' ? styles.bad : ''}`}>{statusLabel(account.status)}</span>
               </div>
               {account.last_error && <p className={styles.warning}>{account.last_error}</p>}
+              <p className={styles.muted} role="status">{connectionHint(account)}</p>
               <div className={styles.authGrid}>
                 {(['colab', 'drive'] as const).map((purpose) => {
                   const auth = purpose === 'colab' ? colab : drive;
                   const delegatedAlias = purpose === 'drive' ? (account.drive_account_alias || account.authorization?.drive?.delegated_alias) : null;
-                  return <div className={styles.authCell} key={purpose}><span>{purpose === 'colab' ? 'Colab' : 'Drive'}</span><b>{delegatedAlias ? `复用「${delegatedAlias}」(${statusLabel(auth)})` : statusLabel(auth)}</b><button type="button" className={styles.buttonSecondary} disabled={Boolean(busy)} onClick={() => void authorize(account, purpose)}>{auth === 'connected' ? '重新授权' : '授权'}</button></div>;
+                  const label = purpose === 'colab' ? 'Colab' : 'Drive';
+                  return (
+                    <div className={styles.authCell} key={purpose}>
+                      <span>{label}</span>
+                      <b>{delegatedAlias ? `复用「${delegatedAlias}」(${statusLabel(auth)})` : statusLabel(auth)}</b>
+                      {auth !== 'connected' && (
+                        <button type="button" className={styles.buttonSecondary} disabled={Boolean(busy) || account.enabled === false} onClick={() => void authorize(account, purpose)}>
+                          {auth === 'needs_reauth' ? `重新连接 ${label}` : `连接 ${label}`}
+                        </button>
+                      )}
+                    </div>
+                  );
                 })}
               </div>
               <div className={styles.accountControls}>
@@ -338,6 +428,20 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
                 {active > 0 && <span className={styles.warningInline}>活动资源 {active} 个，不能直接解除</span>}
                 {isBusy && <span className={styles.muted}>处理中…</span>}
               </div>
+              {(colab === 'connected' || drive === 'connected') && (
+                <details>
+                  <summary>授权维护</summary>
+                  <div className={styles.cardActions}>
+                    {(['colab', 'drive'] as const)
+                      .filter((purpose) => authStatus(account, purpose) === 'connected' && !(purpose === 'drive' && account.drive_account_id))
+                      .map((purpose) => (
+                        <button key={purpose} type="button" className={styles.buttonSecondary} disabled={Boolean(busy) || account.enabled === false} onClick={() => void authorize(account, purpose)}>
+                          重新授权 {purpose === 'colab' ? 'Colab' : 'Drive'}
+                        </button>
+                      ))}
+                  </div>
+                </details>
+              )}
             </article>
           );
         })}

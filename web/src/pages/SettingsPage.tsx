@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Settings, ChevronLeft, ChevronRight, Monitor, Gauge, Plug, Cpu, Layers, LogOut, Search, Square } from 'lucide-react';
 import { WorkflowsPanel } from './WorkflowManager';
 import { ThemePicker } from './ComputePage';
@@ -46,7 +46,8 @@ export function SettingsPanel({
   onAccountsChange?: (accounts: GpuAccount[]) => void;
 }) {
   const [view, setView] = useState<'main' | 'workflows'>('main');
-  const [oauthConfigured, setOauthConfigured] = useState(false);
+  const [oauthConfigRevision, setOauthConfigRevision] = useState(0);
+  const oauthSetupRef = useRef<HTMLDetailsElement>(null);
 
   const activeCount = Number(usage?.active_runtimes ?? 0);
   const dailyCap = Number(usage?.daily_limit || settings?.budget?.daily_units || 0);
@@ -90,11 +91,16 @@ export function SettingsPanel({
       <InstanceCenter instances={instances} onRefresh={onRefreshInstances} />
 
       <Card icon={<Plug size={17} strokeWidth={1.6} aria-hidden />} title="Google 账号" aside={settings?.offline_mode ? <span className="pill">离线模式</span> : undefined}>
-        <AccountDirectory accounts={accounts} onAccountsChange={onAccountsChange} />
+        <AccountDirectory key={oauthConfigRevision} accounts={accounts} onAccountsChange={onAccountsChange} onSetupRequested={() => {
+          if (oauthSetupRef.current) {
+            oauthSetupRef.current.open = true;
+            oauthSetupRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }} />
         {!settings?.offline_mode && (
-          <details className="foldable">
+          <details ref={oauthSetupRef} className="foldable">
             <summary>Google 应用配置（首次使用）</summary>
-            <div className="foldContent"><GoogleOAuthSetup onConfigured={() => setOauthConfigured(true)} /></div>
+            <div className="foldContent"><GoogleOAuthSetup onConfigured={() => setOauthConfigRevision((revision) => revision + 1)} /></div>
           </details>
         )}
       </Card>

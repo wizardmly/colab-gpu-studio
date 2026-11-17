@@ -8,6 +8,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SITE_URL_ARG="${1:-}"
 
+set_env_var() {
+  local key="$1"
+  local val="$2"
+  if grep -qE "^${key}=" .env; then
+    sed -i "s|^${key}=.*|${key}=${val}|" .env
+  else
+    printf '%s=%s\n' "$key" "$val" >> .env
+  fi
+}
+
 echo "==> [1/5] 检查 2G 内存机器 Swap 保护（防止前端构建或视频传输突发 OOM）..."
 if ! swapon --show | grep -q '/'; then
   if [ "$(id -u)" -eq 0 ] && [ ! -f /swapfile ]; then
@@ -47,38 +57,15 @@ if [ ! -f .env ]; then
     sh -c "pip install -q --no-cache-dir cryptography && python scripts/init_env.py --site-url '$SITE_URL_ARG'"
 
   # 针对真实 GPU（出图 + MiniMax H3 出视频 + Google AI Ultra 高额度/30TB Drive）写入生产参数
-  python3 - <<'PY' || docker run --rm -v "$PWD":/app -w /app python:3.12-slim python - <<'PY'
-from pathlib import Path
-
-env_path = Path(".env")
-lines = env_path.read_text(encoding="utf-8").splitlines()
-overrides = {
-    "ENVIRONMENT": "production",
-    "GPU_REAL_ENABLED": "1",
-    "GPU_STORAGE": "drive",
-    "GPU_REAL_RETENTION_VERIFIED": "1",
-    "GPU_MAX_RUNTIME_MINUTES": "60",
-    "GPU_UNIT_RATE": "0.027",
-    "GPU_DAILY_UNITS": "25",
-    "GPU_MONTHLY_UNITS": "450",
-    "GPU_MAX_JOB_UNITS": "8",
-}
-seen = set()
-out = []
-for line in lines:
-    if "=" in line and not line.lstrip().startswith("#"):
-        k, _ = line.split("=", 1)
-        k = k.strip()
-        if k in overrides:
-            out.append(f"{k}={overrides[k]}")
-            seen.add(k)
-            continue
-    out.append(line)
-for k, v in overrides.items():
-    if k not in seen:
-        out.append(f"{k}={v}")
-env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
-PY
+  set_env_var "ENVIRONMENT" "production"
+  set_env_var "GPU_REAL_ENABLED" "1"
+  set_env_var "GPU_STORAGE" "drive"
+  set_env_var "GPU_REAL_RETENTION_VERIFIED" "1"
+  set_env_var "GPU_MAX_RUNTIME_MINUTES" "60"
+  set_env_var "GPU_UNIT_RATE" "0.027"
+  set_env_var "GPU_DAILY_UNITS" "25"
+  set_env_var "GPU_MONTHLY_UNITS" "450"
+  set_env_var "GPU_MAX_JOB_UNITS" "8"
   chmod 600 .env
   echo "    已生成并优化 .env（已开启 GPU_REAL_ENABLED=1, GPU_STORAGE=drive, 保留热复用及 60 分钟视频超时上限）。"
   echo "    请使用以下命令查看初始网页登录密码并离线备份 ENCRYPTION_KEY："
@@ -106,4 +93,4 @@ docker image prune -f >/dev/null 2>&1 || true
 docker builder prune -af >/dev/null 2>&1 || true
 df -h /
 
-echo "部署完成！请确认 Caddy 已将你的 HTTPS 域名反代至 127.0.0.1:8788（参考 deploy/Caddyfile.example）。"
+echo "部署完成！请将你的 HTTPS 域名反代至 127.0.0.1:8788。"

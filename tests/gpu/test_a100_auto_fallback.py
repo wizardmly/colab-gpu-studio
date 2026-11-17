@@ -1,4 +1,4 @@
-"""Tests for A100-first GPU selection with automatic NO_RUNTIMES fallback to T4/L4."""
+"""Tests for smoke-only A100-first selection with NO_RUNTIMES fallback; normal jobs strictly use workflow compute_spec."""
 
 from app.db import Store
 from app.gpu.colab import ColabAllocationError
@@ -56,7 +56,7 @@ def _cfg():
     )
 
 
-def test_krea_job_prefers_a100_then_falls_back_to_t4_and_l4_on_no_runtimes(monkeypatch):
+def test_smoke_activation_tries_a100_then_falls_back_to_workflow_t4_on_no_runtimes(monkeypatch):
     monkeypatch.setenv("GPU_PREFER_A100_FALLBACK", "1")
     repo = Repository(Store("sqlite://"))
     provider = FallbackProvider({"A100"})
@@ -66,37 +66,60 @@ def test_krea_job_prefers_a100_then_falls_back_to_t4_and_l4_on_no_runtimes(monke
         {
             "state": "allocating",
             "provider": "colab",
+            "workflow_smoke": True,
+            "requested_spec": SPECS[0],
             "max_runtime_minutes": 10,
             "snapshot": {
+                "workflow_smoke": True,
                 "manifest": {
                     "compute_spec": {"variant": "VARIANT_GPU", "accelerator": "T4", "shape": "SHAPE_HIGHMEM"}
-                }
+                },
             },
         },
     )
     scheduler = Scheduler(repo, config=_cfg(), provider_factory=lambda j: provider, executor_factory=lambda j: MockGPUExecutor())
 
-    # Attempt 1 tries A100 -> NO_RUNTIMES -> enters cleaning_up
     step1 = scheduler._allocation(job)
     assert provider.tried == ["A100"]
     assert step1["state"] == "cleaning_up"
     assert step1["error_code"] == "gpu_capacity_unavailable"
 
-    # Cleanup confirms A100 lease is deleted and automatically requeues onto T4 HighMem
     requeued = scheduler._cleanup(step1)
     assert requeued["state"] == "queued"
     assert requeued["requested_spec"]["key"] == {"variant": "VARIANT_GPU", "accelerator": "T4", "shape": "SHAPE_HIGHMEM"}
-    events = [e["message"] for e in repo.list("events", "owner") if e.get("job_id") == job["id"]]
-    assert any("A100" in m and "T4" in m for m in events)
 
-    # Attempt 2 allocates T4 HighMem and reaches preparing
     allocating = repo.update("jobs", job["id"], {"state": "allocating"}, "owner")
     step2 = scheduler._allocation(allocating)
     assert provider.tried == ["A100", "T4"]
     assert step2["state"] == "preparing"
 
 
-def test_video_l4_workflow_falls_back_from_a100_to_l4_and_never_t4(monkeypatch):
+def test_normal_production_job_never_grabs_a100_and_strictly_uses_workflow_compute_spec(monkeypatch):
+    monkeypatch.setenv("GPU_PREFER_A100_FALLBACK", "1")
+    repo = Repository(Store("sqlite://"))
+    provider = FallbackProvider(set())
+    job = repo.create(
+        "jobs",
+        "owner",
+        {
+            "state": "allocating",
+            "provider": "colab",
+            "max_runtime_minutes": 10,
+            "snapshot": {
+                "manifest": {
+                    "compute_spec": {"variant": "VARIANT_GPU", "accelerator": "L4", "shape": "SHAPE_STANDARD"}
+                }
+            },
+        },
+    )
+    scheduler = Scheduler(repo, config=_cfg(), provider_factory=lambda j: provider, executor_factory=lambda j: MockGPUExecutor())
+
+    step = scheduler._allocation(job)
+    assert provider.tried == ["L4"]
+    assert step["state"] == "preparing"
+
+
+def test_video_l4_smoke_falls_back_from_a100_to_l4_and_never_t4(monkeypatch):
     monkeypatch.setenv("GPU_PREFER_A100_FALLBACK", "1")
     repo = Repository(Store("sqlite://"))
     provider = FallbackProvider({"A100", "L4"})
@@ -119,12 +142,10 @@ def test_video_l4_workflow_falls_back_from_a100_to_l4_and_never_t4(monkeypatch):
     )
     scheduler = Scheduler(repo, config=_cfg(), provider_factory=lambda j: provider, executor_factory=lambda j: MockGPUExecutor())
 
-    # Attempt 1: A100 -> NO_RUNTIMES -> requeues onto L4
     requeued = scheduler._cleanup(scheduler._allocation(job))
     assert requeued["state"] == "queued"
     assert requeued["requested_spec"]["key"]["accelerator"] == "L4"
 
-    # Attempt 2: L4 -> NO_RUNTIMES -> does NOT downgrade 24GB video job to 15GB T4; terminates failed
     allocating = repo.update("jobs", job["id"], {"state": "allocating"}, "owner")
     terminal = scheduler._cleanup(scheduler._allocation(allocating))
     assert provider.tried == ["A100", "L4"]

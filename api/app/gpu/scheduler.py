@@ -780,11 +780,10 @@ class Scheduler:
         snapshot = job.get("snapshot") or {}
         smoke = snapshot.get("system_smoke") is True
         prep = snapshot.get("prep") is True
-        if self._prefer_a100_fallback() and not prep and not smoke:
-            if job.get("exhausted_spec_keys") or (requested_key is None and not snapshot.get("workflow_smoke")):
-                candidates = self._candidate_specs(job, specs)
-                if candidates:
-                    return candidates[0]
+        if self._prefer_a100_fallback() and snapshot.get("workflow_smoke") is True and job.get("exhausted_spec_keys"):
+            candidates = self._candidate_specs(job, specs)
+            if candidates:
+                return candidates[0]
         # 官方 runtimespecs 只返回 key(variant/accelerator/shape)。经审查的工作流在
         # manifest.compute_spec 写明已验证过的规格；普通任务只允许这个规格，
         # 管理员冒烟任务按其请求的规格运行，缓存准备只用固定的 CPU 规格。
@@ -885,9 +884,9 @@ class Scheduler:
         if (
             self._prefer_a100_fallback()
             and self._provider_name(job) == "colab"
+            and (job.get("snapshot") or {}).get("workflow_smoke") is True
             and isinstance(spec, dict)
             and spec.get("key")
-            and not (job.get("snapshot") or {}).get("prep")
             and self._spec_key(job.get("requested_spec") or {}) != self._spec_key(spec)
         ):
             job = self._update("jobs", job["id"], {"requested_spec": spec}, job.get("owner_id"))
@@ -1385,6 +1384,8 @@ class Scheduler:
         if job.get("error_code") != "gpu_capacity_unavailable" or self._provider_name(job) != "colab":
             return None
         snapshot = job.get("snapshot") or {}
+        if snapshot.get("workflow_smoke") is not True:
+            return None
         if job.get("cancel_requested") or job.get("prep") or snapshot.get("prep") or snapshot.get("system_smoke"):
             return None
         requeue = getattr(self.store, "requeue_spec_fallback", None)

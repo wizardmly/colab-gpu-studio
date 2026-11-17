@@ -23,6 +23,7 @@ def public_job(job, *, include_runtime_logs=False):
         "error_message",
         "created_at",
         "updated_at",
+        "archived_at",
         "started_at",
         "completed_at",
         "estimated_units",

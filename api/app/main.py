@@ -586,6 +586,23 @@ def job_events(job_id: str, request: Request, user=Depends(current_user), st=Dep
     return ok([e for e in repo.list("events", user["id"]) if e.get("job_id") == job_id][::-1], request)
 
 
+class JobArchiveInput(BaseModel):
+    archived: bool = Field(strict=True)
+
+
+@router.patch("/jobs/{job_id}/archive")
+def archive_job(job_id: str, body: JobArchiveInput, request: Request, user=Depends(current_user), st=Depends(get_store)):
+    repo = Repository(st)
+    own(repo, "jobs", job_id, user)
+    try:
+        job = repo.set_job_archived(job_id, user["id"], body.archived)
+    except KeyError as exc:
+        raise APIError("NOT_FOUND", "任务不存在或不属于当前用户", 404) from exc
+    except ValueError as exc:
+        raise APIError("JOB_ACTIVE", str(exc), 409) from exc
+    return ok(public_job(job), request)
+
+
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
     own(Repository(st), "jobs", job_id, user)

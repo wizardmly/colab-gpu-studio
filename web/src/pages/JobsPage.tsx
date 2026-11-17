@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
-import { Zap, Search, RefreshCw, Image as ImageIcon, Film, Loader, ChevronRight, Square, RotateCcw } from 'lucide-react';
-import { type GpuJob } from '../lib/gpu-api';
+import { Zap, Search, RefreshCw, Image as ImageIcon, Film, Loader, ChevronRight, Square, RotateCcw, Archive, ArchiveRestore } from 'lucide-react';
+import { apiMessage, type GpuJob } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 import { formatDateTime, jobSize, progressPercent, readableState, terminalStates } from '../lib/ui-helpers';
 import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
@@ -15,7 +15,7 @@ const FAILED = ['failed', 'failed_final', 'cancelled', 'cancelled_local', 'block
 type Filter = 'all' | 'running' | 'completed' | string;
 
 export function TasksPanel({
-  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance,
+  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance, onArchive, onRelease,
 }: {
   jobs: GpuJob[];
   error: string;
@@ -26,10 +26,16 @@ export function TasksPanel({
   onDetail: (job: GpuJob) => void;
   onRetain?: (job: GpuJob) => void;
   onInstance?: (job: GpuJob) => void;
+  onArchive?: (job: GpuJob, archived: boolean) => Promise<unknown>;
+  onRelease?: (job: GpuJob) => Promise<unknown>;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(30);
+  const [busy, setBusy] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [status, setStatus] = useState('');
+  const [releaseTarget, setReleaseTarget] = useState<GpuJob | null>(null);
 
   const stateOf = (job: GpuJob) => String(job.state || 'queued').toLowerCase();
   const isActive = (job: GpuJob) => !terminalStates.has(stateOf(job));
@@ -44,21 +50,51 @@ export function TasksPanel({
   }, [jobs]);
 
   const counts = useMemo(() => ({
-    running: uniqueJobs.filter(isActive).length,
-    completed: uniqueJobs.filter((j) => DONE.includes(String(j.state || '').toLowerCase())).length,
+    all: uniqueJobs.filter((job) => !job.archived_at).length,
+    running: uniqueJobs.filter((job) => !job.archived_at && isActive(job)).length,
+    completed: uniqueJobs.filter((job) => !job.archived_at && DONE.includes(stateOf(job))).length,
+    archived: uniqueJobs.filter((job) => job.archived_at).length,
   }), [uniqueJobs]);
 
   const filtered = uniqueJobs.filter((job) => {
     const s = stateOf(job);
+    if (Boolean(job.archived_at) !== (filter === 'archived')) return false;
     if (filter === 'running' && !isActive(job)) return false;
     if (filter === 'completed' && !DONE.includes(s)) return false;
-    if (filter !== 'all' && filter !== 'running' && filter !== 'completed' && job.state !== filter) return false;
+    if (!['all', 'running', 'completed', 'archived'].includes(filter) && s !== filter) return false;
     return `${job.workflow_key || ''} ${job.id}`.toLowerCase().includes(query.toLowerCase());
   });
 
   const chip = (value: Filter, label: string) => (
     <button type="button" className={styles.chip} data-active={filter === value} onClick={() => setFilter(value)}>{label}</button>
   );
+
+  async function archive(job: GpuJob) {
+    if (!onArchive || busy) return;
+    setBusy(job.id); setActionError(''); setStatus('');
+    try {
+      await onArchive(job, !job.archived_at);
+      setStatus(job.archived_at ? '任务已恢复到任务列表。' : '任务已归档，可在“已归档”中查看和恢复。');
+    } catch (cause) {
+      setActionError(apiMessage(cause));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function release() {
+    if (!releaseTarget || !onRelease || busy) return;
+    setBusy(releaseTarget.id); setActionError(''); setStatus('');
+    try {
+      await onRelease(releaseTarget);
+      setReleaseTarget(null);
+      setStatus('已提交实例释放请求，远端状态由服务端持续核查。');
+    } catch (cause) {
+      setActionError(apiMessage(cause));
+    } finally {
+      setBusy('');
+    }
+  }
 
   return (
     <div className={styles.stack}>
@@ -70,6 +106,8 @@ export function TasksPanel({
       </div>
 
       {error && <p className="status error" role="alert">{error}</p>}
+      {actionError && !releaseTarget && <p className="status error" role="alert">{actionError}</p>}
+      {status && <p className="status" role="status">{status}</p>}
 
       <label className={styles.searchBox}>
         <Search size={17} strokeWidth={1.6} aria-hidden />
@@ -78,13 +116,14 @@ export function TasksPanel({
 
       <div className={styles.filterBar}>
         <div className={styles.chipRow}>
-          {chip('all', `全部 ${uniqueJobs.length}`)}
+          {chip('all', `全部 ${counts.all}`)}
           {chip('running', `进行中 ${counts.running}`)}
           {chip('completed', `已完成 ${counts.completed}`)}
         </div>
         <select aria-label="按状态筛选" className={styles.miniSelect} value={['all', 'running', 'completed'].includes(filter) ? '' : filter} onChange={(e) => setFilter(e.target.value || 'all')}>
           <option value="">更多状态</option>
-          {[...new Set(uniqueJobs.map((job) => job.state || 'queued'))].map((state) => <option value={state} key={state}>{jobStateLabel(state)}</option>)}
+          <option value="archived">已归档 {counts.archived}</option>
+          {[...new Set(uniqueJobs.filter((job) => !job.archived_at).map(stateOf))].map((state) => <option value={state} key={state}>{jobStateLabel(state)}</option>)}
         </select>
       </div>
 
@@ -162,10 +201,17 @@ export function TasksPanel({
                       <Square size={13} strokeWidth={1.8} aria-hidden />取消
                     </button>
                   ) : (
-                    <button className="button secondary small" style={{ flex: 1 }} type="button" onClick={() => onRetry(job.id)}>
+                    <button className="button secondary small" style={{ flex: 1 }} type="button" disabled={Boolean(busy)} onClick={() => onRetry(job.id)}>
                       <RotateCcw size={13} strokeWidth={1.8} aria-hidden />{failed ? '重试' : '再来一次'}
                     </button>
                   )}
+                  {terminalStates.has(s) && onArchive && <button className="button secondary small" type="button" disabled={Boolean(busy)} onClick={() => void archive(job)}>
+                    {job.archived_at ? <ArchiveRestore size={13} aria-hidden /> : <Archive size={13} aria-hidden />}{job.archived_at ? '恢复到列表' : '归档'}
+                  </button>}
+                  {terminalStates.has(s) && instanceId && !job.runtime_deleted && job.instance_state !== 'deleted' && onRelease && <button
+                    className="button danger small" type="button" disabled={Boolean(busy) || job.instance_state === 'releasing'}
+                    onClick={() => { setActionError(''); setReleaseTarget(job); }}
+                  ><Square size={13} aria-hidden />{job.instance_state === 'releasing' ? '释放中' : '释放关联实例'}</button>}
                 </div>
               </article>
             );
@@ -173,14 +219,25 @@ export function TasksPanel({
         </div>
       ) : (
         <div className="empty">
-          <strong>还没有任务</strong>
-          <span>在「创作」里点「立即生成」，任务会出现在这里。</span>
+          <strong>{filter === 'archived' ? '没有已归档任务' : uniqueJobs.length ? '当前筛选没有任务' : '还没有任务'}</strong>
+          <span>{filter === 'archived' ? '已结束任务归档后会显示在这里。' : counts.archived > 0 ? '可在“更多状态”中选择“已归档”查看历史任务。' : '在「创作」里点「立即生成」，任务会出现在这里。'}</span>
         </div>
       )}
 
       {filtered.length > limit && (
         <button className="button secondary block" type="button" onClick={() => setLimit(limit + 30)}>加载更多任务</button>
       )}
+      {releaseTarget && <div className={styles.dialogBackdrop} role="presentation">
+        <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="确认释放关联实例">
+          <h2>释放关联实例？</h2>
+          <p>实例 {String(releaseTarget.instance_label || releaseTarget.instance_id)} 释放后，该机器上正在运行的任务会停止。服务端会核查远端状态，确认释放后更新记录。</p>
+          {actionError && <p className="status error" role="alert">{actionError}</p>}
+          <div className="actions">
+            <button className="button secondary" type="button" disabled={Boolean(busy)} onClick={() => setReleaseTarget(null)}>取消</button>
+            <button className="button danger" type="button" disabled={Boolean(busy)} onClick={() => void release()}>{busy ? '提交中…' : '确认释放'}</button>
+          </div>
+        </section>
+      </div>}
     </div>
   );
 }

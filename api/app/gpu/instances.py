@@ -714,10 +714,22 @@ class InstanceService:
                 raise KeyError(id)
             if instance.state == "deleted":
                 result = self._dict(instance)
-            elif instance.state == "unknown":
-                raise InstanceConflict("unknown instance requires reconciliation before stop")
             else:
+                # Unknown instances can request release too. The watchdog must
+                # reconcile the owned lease and confirm remote deletion.
                 data = self._data(instance)
+                current_job_id = data.get("current_job_id") or instance.current_job_id
+                current_job = self._find(session, "jobs", current_job_id, owner) if current_job_id else None
+                if current_job is not None:
+                    if current_job.state in {"completed", "failed", "cancelled"}:
+                        data["current_job_id"] = None
+                    else:
+                        job_data = self._data(current_job)
+                        bound_instance = job_data.get("instance_id") or current_job.instance_id
+                        if bound_instance not in {None, id}:
+                            raise InstanceConflict("实例与当前任务绑定不一致，请先核查关联记录")
+                        job_data.update(cancel_requested=True, requested_outcome="cancelled")
+                        self._set(current_job, job_data, state=current_job.state, session=session)
                 data.update(
                     manual_stop_requested=True, retention_mode="save", idle_deadline_at=None,
                     retention_reserved=0.0, last_seen_at=self.clock(),

@@ -1706,6 +1706,7 @@ class Scheduler:
             "id": owner_job_id,
             "owner_id": owner_id,
             "provider": lease.get("provider", "mock"),
+            "account_id": lease.get("account_id"),
             "instance_id": instance_id,
         }
         handle = self._lease_handle(lease) or self._intent_handle(job, lease)

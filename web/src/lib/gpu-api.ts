@@ -80,6 +80,7 @@ export interface GpuJob {
   stage?: string | null;
   created_at?: string;
   updated_at?: string;
+  archived_at?: string | null;
   events?: GpuEvent[];
   prep?: boolean;
   awaiting_prep?: boolean;
@@ -257,6 +258,9 @@ export async function createGpuJob(body: GpuJobRequest, idempotencyKey: string):
 export const getGpuJobs = (projectId: string) => apiFetch<GpuJob[]>(`/api/gpu/jobs?project_id=${encodeURIComponent(projectId)}`);
 export const getGpuJob = (id: string) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}`);
 export const cancelGpuJob = (id: string) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}/cancel`, post({}));
+export const setGpuJobArchived = (id: string, archived: boolean) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}/archive`, {
+  method: 'PATCH', body: JSON.stringify({ archived }),
+});
 export const retryGpuJob = (id: string, idempotencyKey: string) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({}) });
 export const getGpuGallery = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/gpu/gallery?project_id=${encodeURIComponent(projectId)}`);
 export const getGpuUsage = () => apiFetch<GpuUsage>('/api/gpu/usage');

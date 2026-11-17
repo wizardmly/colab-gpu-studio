@@ -21,7 +21,8 @@ const { outputFiles } = await build({
       render(job) {
       return renderToStaticMarkup(createElement(TasksPanel, {
         jobs: [job], error: '', refreshing: false,
-        onRefresh() {}, onCancel() {}, onRetry() {}, onDetail() {}, onRetain() {}
+         onRefresh() {}, onCancel() {}, onRetry() {}, onDetail() {}, onRetain() {},
+         async onArchive() {}, async onRelease() {}
       }));
     }};
   `, resolveDir: process.cwd(), loader: 'tsx' },
@@ -70,6 +71,13 @@ assert.match(renderDetails(waitingPrep), /准备模型权重/);
 assert.match(renderDetails(waitingPrep), /model-download 50%/);
 assert.match(renderDetails(waitingPrep), /HTTP 403/);
 assert.doesNotMatch(render({ ...waitingPrep, state: 'cancelled' }), /CPU 准备缓存|缓存完成后申请 GPU/);
+const failedWithInstance = { ...base, state: 'failed', runtime_deleted: false, instance_state: 'unknown' };
+assert.match(render(failedWithInstance), /归档<\/button>/);
+assert.match(render(failedWithInstance), /释放关联实例<\/button>/);
+assert.doesNotMatch(render({ ...failedWithInstance, instance_state: 'deleted' }), /释放关联实例<\/button>/);
+assert.doesNotMatch(render({ ...failedWithInstance, instance_id: null }), /释放关联实例<\/button>/);
+assert.doesNotMatch(render({ ...failedWithInstance, archived_at: '2026-11-17T20:00:00Z' }), /<article/);
+assert.doesNotMatch(render({ ...failedWithInstance, state: 'running' }), /归档<\/button>/);
 const released = { id: 'released', instance_label: 'released-machine', state: 'deleted', retained_until: '2099-01-01' };
 const instanceRows = [released, ...['busy', 'retained_idle', 'releasing', 'unknown', 'cleanup_pending', 'quarantined'].map((state) => ({
   id: state, state, instance_label: `${state}-machine`,

@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import Mapping
 
-from sqlalchemy import String, UniqueConstraint, inspect, select, text
+from sqlalchemy import String, UniqueConstraint, inspect, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -1153,6 +1153,34 @@ class Repository:
                 raise
             return existing
 
+    def set_job_archived(self, job_id: str, owner_id: str, archived: bool):
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job = session.scalar(
+                select(GpuJobRow).where(GpuJobRow.id == job_id, GpuJobRow.owner_id == owner_id).with_for_update()
+            )
+            if job is None:
+                raise KeyError(job_id)
+            if archived and job.state not in {"completed", "failed", "cancelled"}:
+                raise ValueError("任务结束后才能归档")
+            data = copy.deepcopy(job.data)
+            if bool(data.get("archived_at")) == archived:
+                return self._row(job)
+            if archived:
+                data["archived_at"] = utc_isoformat(utcnow())
+            else:
+                data.pop("archived_at", None)
+            changed = session.execute(
+                update(GpuJobRow).where(
+                    GpuJobRow.id == job_id, GpuJobRow.owner_id == owner_id,
+                    GpuJobRow.version == job.version, GpuJobRow.state == job.state,
+                ).values(data=data, version=job.version + 1, updated_at=utcnow())
+                .execution_options(synchronize_session=False)
+            )
+            if changed.rowcount != 1:
+                raise ValueError("任务状态已变化，请刷新后重试")
+            session.refresh(job)
+            return self._row(job)
+
     def retry_attempt(self, job_id, owner_id, key):
         """Requeue a cleaned failed Mock job; immutable snapshot and executions survive."""
         if not key or len(key)>200:
@@ -1188,6 +1216,7 @@ class Repository:
                 'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at',
                 'poll_last_error','runtime_logs',
                 'gpu_reported','gpu_diagnostics',
+                'archived_at',
             }
             for k in transient:
                 data.pop(k,None)

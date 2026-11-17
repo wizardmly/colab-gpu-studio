@@ -8,10 +8,10 @@ import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folde
 import {
   apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
   apiFetch,
-  getGpuComputeSpecs, getGpuGallery, getGpuJob, getGpuJobs, getGpuModels, listGpuInstances,
+  getGpuComputeSpecs, getGpuGallery, getGpuInstance, getGpuJob, getGpuJobs, getGpuModels, listGpuInstances,
   getGpuPresets, getReferenceAssets, getGpuSettings, getGpuUsage, getGpuWorkflowSchema, getGpuWorkflows, getProjects, importGpuWorkflow,
   isLoggedIn, login, publishGpuWorkflow, retryGpuJob, retryGpuAttempt, startGoogleAuth, stopGpuCompute, updateAsset, uploadAsset,
-  validateGpuWorkflow, rollbackGpuWorkflow, deactivateGpuWorkflow, saveGpuPreset, ApiError, type ComputeSpec, type GalleryAsset, type GpuJob, type GpuPreset,
+  validateGpuWorkflow, rollbackGpuWorkflow, deactivateGpuWorkflow, saveGpuPreset, setGpuJobArchived, stopInstance, ApiError, type ComputeSpec, type GalleryAsset, type GpuJob, type GpuPreset,
   type GpuManifest, type GpuModel, type GpuSettings, type GpuUsage, type GpuWorkflow, type Project, type Provider,
 } from './lib/gpu-api';
 import type { GpuAccount, GpuInstance } from './components/AccountDirectory';
@@ -763,6 +763,25 @@ export default function App() {
     });
   }
 
+  async function archiveJob(job: GpuJob, archived: boolean) {
+    const updated = await setGpuJobArchived(job.id, archived);
+    setJobs((current) => current.map((item) => item.id === job.id ? { ...item, ...updated, archived_at: updated.archived_at || null } : item));
+  }
+
+  async function releaseJobInstance(job: GpuJob) {
+    const instanceId = String(job.instance_id || '');
+    const instance = await getGpuInstance(instanceId);
+    if (instance.state !== 'deleted') {
+      const operation = `stop:${instanceId}`;
+      const key = instanceRetentionKeys.current[operation] ||= `stop:${instanceId}:${keyId()}`;
+      await stopInstance(instanceId, key);
+      delete instanceRetentionKeys.current[operation];
+    }
+    const nextInstances = await listGpuInstances() as unknown as GpuInstance[];
+    setInstances(uniqueBy(nextInstances, instanceIdOf));
+    await refreshJobs();
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -872,7 +891,10 @@ export default function App() {
 
         {tab === '任务' && (
           <TasksPanel
-            jobs={jobs}
+            jobs={jobs.map((job) => {
+              const instance = instances.find((item) => instanceIdOf(item) === job.instance_id);
+              return instance ? { ...job, instance_state: instance.state, runtime_deleted: instance.state === 'deleted' } : job;
+            })}
             error={jobError}
             refreshing={refreshingJobs}
             onRefresh={() => void refreshJobs()}
@@ -888,6 +910,8 @@ export default function App() {
             })}
             onDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
             onRetain={(job) => void retainJob(job)}
+            onArchive={archiveJob}
+            onRelease={releaseJobInstance}
             onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); setTab('算力'); } }}
           />
         )}

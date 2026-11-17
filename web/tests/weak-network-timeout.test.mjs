@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { transform } from 'esbuild';
+import { smokeIdempotencyKey } from '../src/lib/activation-resume.ts';
+import { selectEligibleColabGpuSpec } from '../src/lib/colab-check.ts';
 
 async function loadApi() {
   const sourcePath = join(process.cwd(), 'src/lib/gpu-api.ts');
@@ -85,5 +87,36 @@ test('uploadAsset sets 180s XHR timeout, handles ontimeout, and surfaces backend
   await assert.rejects(
     () => api.uploadAsset('proj-1', fakeFile),
     (err) => err.status === 413 && err.code === 'PAYLOAD_TOO_LARGE' && err.message === '请求超过上传限制',
+  );
+});
+
+test('smokeIdempotencyKey rotates after a terminal failed smoke job instead of replaying old failure', () => {
+  const store = new Map();
+  globalThis.sessionStorage = {
+    getItem: (k) => store.get(k) ?? null,
+    setItem: (k, v) => store.set(k, v),
+    removeItem: (k) => store.delete(k),
+  };
+
+  const first = smokeIdempotencyKey('wf-1', 'proj-1', []);
+  assert.equal(smokeIdempotencyKey('wf-1', 'proj-1', []), first);
+
+  const afterFailed = smokeIdempotencyKey('wf-1', 'proj-1', [], 'failed-job-0325');
+  assert.notEqual(afterFailed, first);
+  assert.equal(smokeIdempotencyKey('wf-1', 'proj-1', [], 'failed-job-0325'), afterFailed);
+});
+
+test('selectEligibleColabGpuSpec prefers workflow manifest compute_spec over A100 first entry', () => {
+  const a100 = { key: { variant: 'VARIANT_GPU', accelerator: 'A100', shape: 'SHAPE_HIGHMEM' }, eligible: true };
+  const t4High = { key: { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }, eligible: true };
+  const l4 = { key: { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }, eligible: true };
+
+  assert.deepEqual(
+    selectEligibleColabGpuSpec([a100, t4High, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
+    t4High,
+  );
+  assert.deepEqual(
+    selectEligibleColabGpuSpec([a100, t4High, l4], { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }),
+    l4,
   );
 });

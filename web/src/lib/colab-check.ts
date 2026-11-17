@@ -63,10 +63,25 @@ export function resolveGpuCheckRequest(
 }
 
 /** Keep the complete official spec object; never stringify its structured key. */
-export function selectEligibleColabGpuSpec(specs: ComputeSpec[]): ComputeSpec | null {
-  return specs.find((spec) => {
+export function selectEligibleColabGpuSpec(
+  specs: ComputeSpec[],
+  preferredKey?: Record<string, unknown> | null,
+): ComputeSpec | null {
+  const gpus = specs.filter((spec) => {
     if (spec.eligible !== true || !spec.key || typeof spec.key !== 'object' || Array.isArray(spec.key)) return false;
     const variant = String((spec.key as Record<string, unknown>).variant || '');
     return variant === 'VARIANT_GPU' || variant === 'GPU';
-  }) || null;
+  });
+  if (preferredKey && typeof preferredKey === 'object') {
+    const accel = String(preferredKey.accelerator || '').toUpperCase();
+    const shape = String(preferredKey.shape || '').toUpperCase();
+    const exact = gpus.find((s) => {
+      const k = s.key as Record<string, unknown>;
+      return String(k.accelerator || '').toUpperCase() === accel && (!shape || String(k.shape || '').toUpperCase() === shape);
+    });
+    if (exact) return exact;
+    const sameGpu = accel ? gpus.find((s) => String((s.key as Record<string, unknown>).accelerator || '').toUpperCase() === accel) : null;
+    if (sameGpu) return sameGpu;
+  }
+  return gpus[0] || null;
 }

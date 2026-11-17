@@ -167,7 +167,7 @@ export function WorkflowActivationPanel({
               account_id: accountId,
               spec,
             },
-            smokeIdempotencyKey(workflow.id, projectId, smokeBody.assetIds),
+            smokeIdempotencyKey(workflow.id, projectId, smokeBody.assetIds, terminalSmokeJobId(snapshot)),
           );
           if (!isCurrent(token)) return;
           snapshot = await refresh(token);
@@ -235,7 +235,10 @@ export function WorkflowActivationPanel({
         if (request.provider !== 'colab') {
           throw new Error('没有已启用且已连接 Colab 的账号，无法读取真实 GPU 规格');
         }
-        const eligible = selectEligibleColabGpuSpec(await getGpuComputeSpecs('colab', request.accountId));
+        const preferredSpec = (workflow.manifest?.compute_spec && typeof workflow.manifest.compute_spec === 'object')
+          ? workflow.manifest.compute_spec as Record<string, unknown>
+          : null;
+        const eligible = selectEligibleColabGpuSpec(await getGpuComputeSpecs('colab', request.accountId), preferredSpec);
         if (!isCurrent(token)) return;
         if (!eligible) throw new Error('当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
         setAccountId(request.accountId);

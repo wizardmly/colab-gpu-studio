@@ -141,8 +141,9 @@ export function writeActivationWatch(value: Record<string, ActivationWatch>): vo
   try { sessionStorage.setItem(WATCH_KEY, JSON.stringify(value)); } catch { /* storage can be unavailable */ }
 }
 
-export function smokeIdempotencyKey(workflowId: string, projectId: string, assetIds: string[]): string {
-  const signature = `${workflowId}:${projectId}:${[...assetIds].sort().join(',')}`;
+export function smokeIdempotencyKey(workflowId: string, projectId: string, assetIds: string[], retryAfterJobId?: string | null): string {
+  const suffix = retryAfterJobId ? `:after:${retryAfterJobId}` : '';
+  const signature = `${workflowId}:${projectId}:${[...assetIds].sort().join(',')}${suffix}`;
   const storageKey = `studio-smoke-idem:${signature}`;
   try {
     const existing = sessionStorage.getItem(storageKey);

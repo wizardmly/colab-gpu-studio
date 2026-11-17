@@ -1617,6 +1617,8 @@ class Scheduler:
             # durable/runtime instance until the prep decision is settled.
             if self._await_prep(job):
                 return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
+            if job.get("awaiting_prep"):
+                job = self._update("jobs", job["id"], {"awaiting_prep": False}, job.get("owner_id"))
             if self._is_v020_job(job):
                 allocated = self._allocate_instance(job)
                 if allocated.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:

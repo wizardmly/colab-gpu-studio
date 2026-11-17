@@ -1,6 +1,6 @@
 import { timingRows, type TimingDetail } from '../lib/job-history';
 import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
-import type { RuntimeLogSnapshot } from '../lib/gpu-api';
+import type { GpuJob, RuntimeLogSnapshot } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 
 export interface JobHistoryDetailRecord {
@@ -11,33 +11,44 @@ export interface JobHistoryDetailRecord {
   logs?: Array<{ id?: string; state?: string; created_at?: string; message?: string }>;
   events?: Array<{ id?: string; state?: string; created_at?: string; message?: string }>;
   prep?: boolean;
+  awaiting_prep?: boolean;
+  cache_prep?: GpuJob;
   runtime_logs?: RuntimeLogSnapshot;
   poll_retry_count?: number;
   poll_last_error?: string | null;
 }
 
-export function JobHistoryDetails({ job, live = false }: { job: JobHistoryDetailRecord; live?: boolean }) {
+export function JobHistoryDetails({ job, live = false, onOpenJob }: { job: JobHistoryDetailRecord; live?: boolean; onOpenJob?: (jobId: string) => void }) {
   const rows = timingRows(job);
   const logs = job.logs || job.events || [];
-  const runtimeLogs = job.runtime_logs;
+  const awaitingPrep = job.state === 'waiting_for_capacity' && job.awaiting_prep === true;
+  const cachePrep = awaitingPrep ? job.cache_prep : undefined;
+  const logJob = cachePrep || job;
+  const runtimeLogs = logJob.runtime_logs;
+  const runtimeLive = live && !['completed', 'failed', 'cancelled'].includes(String(logJob.state));
   const collectedAt = runtimeLogs?.collected_at ? new Date(runtimeLogs.collected_at * 1000).toLocaleString() : null;
   return (
     <>
       <p className="muted small">
-        状态：{jobStateLabel(job.state)}
+        状态：{jobStateLabel(job.state, job)}
         {job.stage ? ` · 当前阶段：${jobStageLabel(job.stage)}` : ''}
       </p>
       <details className="foldable" open>
-        <summary>{job.prep ? '缓存准备运行日志' : '模型与 ComfyUI 运行日志'}</summary>
+        <summary>{awaitingPrep || logJob.prep ? '缓存准备运行日志' : '模型与 ComfyUI 运行日志'}</summary>
         <div className="foldContent" aria-label="运行时日志">
+          {cachePrep && <>
+            <p className="muted small">CPU 缓存任务 {cachePrep.id.slice(0, 8)} · {jobStateLabel(cachePrep.state)}{cachePrep.stage ? ` · ${jobStageLabel(cachePrep.stage)}` : ''}</p>
+            {cachePrep.error_message && <p className="status error" role="status">{cachePrep.error_message}</p>}
+            {onOpenJob && <button className="button secondary small" type="button" onClick={() => onOpenJob(cachePrep.id)}>打开 CPU 缓存任务</button>}
+          </>}
           <p className="muted small">
             {collectedAt ? `最近读取 ${collectedAt}` : live ? '等待运行时日志回传' : '尚无运行日志记录'}
             {live ? ' · 每 4 秒刷新' : ''}
           </p>
-          {job.poll_last_error && <p className="status error" role="status">{live ? `状态查询正在重试（${job.poll_retry_count || 0}/5）` : '最近状态查询错误'} · {job.poll_last_error}</p>}
+          {logJob.poll_last_error && <p className="status error" role="status">{runtimeLive ? `状态查询正在重试（${logJob.poll_retry_count || 0}/5）` : '最近状态查询错误'} · {logJob.poll_last_error}</p>}
           {runtimeLogs?.worker && <><h3>模型与环境</h3><pre className={styles.diagnostics} tabIndex={0} aria-label="模型与环境日志">{runtimeLogs.worker}</pre></>}
           {runtimeLogs?.comfyui && <><h3>ComfyUI</h3><pre className={styles.diagnostics} tabIndex={0} aria-label="ComfyUI 日志">{runtimeLogs.comfyui}</pre></>}
-          {!runtimeLogs?.worker && !runtimeLogs?.comfyui && <p className="muted small">{job.prep ? '模型下载、缓存上传和环境安装输出会显示在这里。' : '模型准备及 ComfyUI 输出会显示在这里。'}</p>}
+          {!runtimeLogs?.worker && !runtimeLogs?.comfyui && <p className="muted small">{awaitingPrep && !cachePrep ? '关联的 CPU 缓存任务记录暂不可用，请稍后刷新。' : logJob.prep ? '模型下载、缓存上传和环境安装输出会显示在这里。' : '模型准备及 ComfyUI 输出会显示在这里。'}</p>}
           {collectedAt && <p className="muted small">显示各日志文件的最近内容，连接中断期间保留上次读取结果。</p>}
         </div>
       </details>

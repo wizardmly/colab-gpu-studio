@@ -28,9 +28,10 @@ export function jobStageLabel(value: unknown): string {
   return stageLabels.get(key) || key || '阶段未知';
 }
 
-export function jobStateLabel(value: unknown): string {
+export function jobStateLabel(value: unknown, job?: { awaiting_prep?: boolean }): string {
   const raw = String(value ?? '').trim();
   const key = raw.toLowerCase();
+  if (key === 'waiting_for_capacity' && job?.awaiting_prep) return '准备缓存';
   return stateLabels.get(key) || raw || '状态未知';
 }
 

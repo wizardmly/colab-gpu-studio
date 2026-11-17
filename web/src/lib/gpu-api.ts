@@ -82,6 +82,9 @@ export interface GpuJob {
   updated_at?: string;
   events?: GpuEvent[];
   prep?: boolean;
+  awaiting_prep?: boolean;
+  prep_job_id?: string;
+  cache_prep?: GpuJob;
   runtime_logs?: RuntimeLogSnapshot;
   poll_retry_count?: number;
   poll_last_error?: string | null;

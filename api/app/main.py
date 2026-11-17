@@ -552,19 +552,30 @@ def jobs(request: Request, project_id: str | None = None, user=Depends(current_u
     return ok([public_job(j) for j in Repository(st).list("jobs", user["id"], project_id)], request)
 
 
-@router.get("/jobs/{job_id}")
-def get_job(job_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
-    repo = Repository(st)
-    job = own(repo, "jobs", job_id, user)
+def _job_detail(repo, job: dict, owner_id: str, now: float) -> dict:
+    job_id = job["id"]
     result = public_job(job, include_runtime_logs=True)
-    result["events"] = [e for e in repo.list("events", user["id"]) if e.get("job_id") == job_id][::-1]
+    result["events"] = [e for e in repo.list("events", owner_id) if e.get("job_id") == job_id][::-1]
     result["logs"] = result["events"]
-    now = time.time()
     result["timings"] = job_timings(job, result["events"], now=now)
     result["timing_details"] = job_timing_details(job, result["events"], now=now)
     allowed={'id','state','attempt','started_at','finished_at','error_code'}
     result['attempts']=sorted([{k:v for k,v in row.items() if k in allowed}
-        for row in repo.list('executions',user['id']) if row.get('job_id')==job_id],key=lambda row:row.get('attempt',0))
+        for row in repo.list('executions',owner_id) if row.get('job_id')==job_id],key=lambda row:row.get('attempt',0))
+    return result
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)):
+    repo = Repository(st)
+    job = own(repo, "jobs", job_id, user)
+    now = time.time()
+    result = _job_detail(repo, job, user["id"], now)
+    prep_id = job.get("prep_job_id")
+    if prep_id and prep_id != job_id and not job.get("prep"):
+        prep = repo.get("jobs", prep_id, user["id"])
+        if prep and (prep.get("prep") or (prep.get("snapshot") or {}).get("prep")):
+            result["cache_prep"] = _job_detail(repo, prep, user["id"], now)
     return ok(result, request)
 
 

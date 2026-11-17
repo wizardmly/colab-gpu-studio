@@ -1035,7 +1035,7 @@ export default function App() {
               <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={() => setDetail(null)}><X size={18} strokeWidth={1.6} aria-hidden /></button>
             </div>
             <dl className={styles.kv}>
-              <dt>状态</dt><dd>{jobStateLabel(detail.state)}</dd>
+              <dt>状态</dt><dd>{jobStateLabel(detail.state, detail)}</dd>
               <dt>运行方式</dt><dd>{detail.provider === 'mock' ? '离线模拟' : detail.provider === 'colab' ? detail.prep ? 'Colab CPU（缓存准备）' : 'Colab GPU' : shown(detail.provider)}</dd>
               <dt>创建时间</dt><dd>{formatInstanceTime(detail.created_at)}</dd>
             </dl>
@@ -1050,7 +1050,7 @@ export default function App() {
               </div>
             </details>}
             {detailError && <p className="status error" role="status">日志刷新失败 · {detailError}</p>}
-            <JobHistoryDetails job={detail} live={!terminalStates.has(String(detail.state || '').toLowerCase())} />
+            <JobHistoryDetails job={detail} live={!terminalStates.has(String(detail.state || '').toLowerCase())} onOpenJob={(jobId) => void action('inspect', async () => setDetail(await getGpuJob(jobId)))} />
             {stageSecondsTotal(jobDetailTimings(detail)) ? <p className="muted small">各阶段相加约 {stageSecondsTotal(jobDetailTimings(detail))}。阶段按秒独立计时，可能重叠，不是工作流发布又额外等了这么久。</p> : null}
             {detail.resolved_params ? (
               <details className="foldable">

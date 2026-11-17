@@ -394,8 +394,8 @@ export function WorkflowActivationPanel({
       {historyError ? <p role="alert" className={styles.errorText}>{historyError}</p> : null}
       {history ? <section aria-label="持久任务详情"><JobHistoryDetails job={history} /></section> : null}
       <div className="actions">
-        {terminalSmokeJobId(data) ? <button className="button secondary" type="button" disabled={historyBusy} onClick={() => {
-          const jobId = terminalSmokeJobId(data);
+        {data?.smoke?.job_id ? <button className="button secondary" type="button" disabled={historyBusy} onClick={() => {
+          const jobId = data.smoke?.job_id;
           if (!jobId) return;
           if (onOpenJob) { onOpenJob(jobId, smokeProjectId || projectId); return; }
           const token = executionRef.current;

@@ -2,8 +2,12 @@ import type { GpuJob } from './gpu-api';
 import { friendlyLabel } from './labels';
 import { formatDuration } from './job-history';
 
-export function taskStatusNote(job: { state?: string; workflow_smoke?: boolean }): string {
+export function taskStatusNote(job: { state?: string; workflow_smoke?: boolean; awaiting_prep?: boolean; prep?: boolean }): string {
   const done = ['completed', 'succeeded', 'success'].includes(String(job.state || '').toLowerCase());
+  if (job.state === 'waiting_for_capacity' && job.awaiting_prep) {
+    return '正在等待 CPU 准备环境和模型缓存，完成后会继续申请 GPU。下方显示关联缓存任务的进度与日志。';
+  }
+  if (job.prep) return done ? 'CPU 缓存准备已完成。' : '这是 CPU 缓存准备任务，正在准备环境和模型文件。';
   if (job.workflow_smoke) {
     return done
       ? '这是工作流启用前的冒烟任务，这次生成已经结束。任务完成不等于工作流已经发布。'

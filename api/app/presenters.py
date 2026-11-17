@@ -50,6 +50,7 @@ def public_job(job, *, include_runtime_logs=False):
         "for_job_id",
         "prep_job_id",
         "awaiting_prep",
+        "awaiting_prep",
         "requested_account_id",
         "requested_instance_id",
         "account_id",

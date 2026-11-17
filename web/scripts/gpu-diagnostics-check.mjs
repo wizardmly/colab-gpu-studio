@@ -8,8 +8,12 @@ const { outputFiles } = await build({
     import { createElement } from 'react';
     import { renderToStaticMarkup } from 'react-dom/server';
     import { TasksPanel } from './src/pages/JobsPage';
+    import { JobHistoryDetails } from './src/components/JobHistoryDetails';
+    import { taskStatusNote } from './src/lib/job-detail-copy';
     import { gpuLabel, canRetainJobInstance } from './src/lib/gpu-label';
-    module.exports = { gpuLabel, canRetainJobInstance, render(job) {
+    module.exports = { gpuLabel, canRetainJobInstance, taskStatusNote,
+      renderDetails(job) { return renderToStaticMarkup(createElement(JobHistoryDetails, { job, live: true })); },
+      render(job) {
       return renderToStaticMarkup(createElement(TasksPanel, {
         jobs: [job], error: '', refreshing: false,
         onRefresh() {}, onCancel() {}, onRetry() {}, onDetail() {}, onRetain() {}
@@ -21,7 +25,7 @@ const { outputFiles } = await build({
 });
 const module = { exports: {} };
 new Function('require', 'module', 'exports', outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
-const { gpuLabel, canRetainJobInstance, render } = module.exports;
+const { gpuLabel, canRetainJobInstance, taskStatusNote, render, renderDetails } = module.exports;
 const base = { id: 'test', project_id: 'example', provider: 'colab', state: 'completed',
   instance_id: 'instance', instance_state: 'deleted', runtime_deleted: true,
   runtime_spec_requested: { accelerator: 'L4' } };
@@ -37,4 +41,19 @@ assert.match(render({ ...base, instance_state: 'busy', runtime_deleted: false })
 const cancelled = render({ ...base, state: 'cancelled', instance_id: null, instance_state: null });
 assert.match(cancelled, /未分配机器/);
 assert.doesNotMatch(cancelled, /等待分配机器|保留这台机器/);
+const waitingPrep = { ...base, state: 'waiting_for_capacity', instance_id: null, instance_state: null,
+  awaiting_prep: true, prep_job_id: 'cpu-prep', cache_prep: {
+    id: 'cpu-prep', project_id: 'example', prep: true, state: 'running', stage: 'prep_weights',
+    runtime_logs: { collected_at: 100, worker: 'model-download 50%' },
+    poll_retry_count: 2, poll_last_error: 'Colab kernel inspect HTTP 403',
+  } };
+assert.match(render(waitingPrep), /准备缓存/);
+assert.match(render(waitingPrep), /缓存完成后申请 GPU/);
+assert.doesNotMatch(render(waitingPrep), /等待分配机器|排队等待中|申请 GPU：/);
+assert.match(taskStatusNote(waitingPrep), /CPU.*缓存.*GPU/);
+assert.match(renderDetails(waitingPrep), /CPU 缓存任务/);
+assert.match(renderDetails(waitingPrep), /准备模型权重/);
+assert.match(renderDetails(waitingPrep), /model-download 50%/);
+assert.match(renderDetails(waitingPrep), /HTTP 403/);
+assert.doesNotMatch(render({ ...waitingPrep, state: 'cancelled' }), /CPU 准备缓存|缓存完成后申请 GPU/);
 console.log('GPU evidence labels and task-card lifecycle checks passed');

@@ -106,6 +106,7 @@ export function TasksPanel({
             const running = RUNNING.includes(s);
             const failed = FAILED.includes(s);
             const waiting = WAITING.includes(s);
+            const awaitingPrep = s === 'waiting_for_capacity' && job.awaiting_prep === true;
             const video = /i2v|video|ref2v|t2v/i.test(job.workflow_key || '');
             const thumb = done && job.output_asset_ids?.[0] && !video ? `/api/assets/${job.output_asset_ids[0]}/thumbnail` : '';
             const size = jobSize(job);
@@ -115,8 +116,8 @@ export function TasksPanel({
             const machineInfo = [
               accountSnapshot ? `账号 ${accountSnapshot}` : '',
               String(job.instance_label || instanceId.slice(0, 8)),
-              gpuLabel(job),
-              instanceId ? readableState(String(job.instance_state || '未知')) : terminalStates.has(s) ? '未分配机器' : '等待分配机器',
+              awaitingPrep ? 'CPU 准备缓存' : gpuLabel(job),
+              instanceId ? readableState(String(job.instance_state || '未知')) : awaitingPrep ? '缓存完成后申请 GPU' : terminalStates.has(s) ? '未分配机器' : '等待分配机器',
             ].filter(Boolean).join(' · ');
             const liveInstance = canRetainJobInstance(job);
             const retained = liveInstance && Boolean(job.retained_until || job.instance_state === 'retained_idle');
@@ -130,7 +131,7 @@ export function TasksPanel({
                   <div className={styles.jobInfo}>
                     <div className={styles.jobTitleRow}>
                       <strong title={job.workflow_key || job.id}>{job.workflow_key || `任务 ${job.id.slice(0, 8)}`}</strong>
-                      <span className={`pill ${done ? 'solid' : failed ? 'danger' : ''}`}>{jobStateLabel(job.state)}</span>
+                      <span className={`pill ${done ? 'solid' : failed ? 'danger' : ''}`}>{jobStateLabel(job.state, job)}</span>
                     </div>
                     <p className="muted small">
                       {[video ? '视频' : '图片', size, job.provider === 'mock' ? '模拟' : job.provider === 'colab' ? 'Colab' : ''].filter(Boolean).join(' · ')}
@@ -144,7 +145,7 @@ export function TasksPanel({
                 {(running || waiting) && (
                   <div className={styles.progressBlock}>
                     <div className={styles.progressText}>
-                      <span>{running ? (job.stage ? jobStageLabel(job.stage) : pct !== null ? `生成中 ${pct}%` : '生成中…') : '排队等待中'}</span>
+                      <span>{awaitingPrep ? '等待 CPU 缓存准备完成' : running ? (job.stage ? jobStageLabel(job.stage) : pct !== null ? `生成中 ${pct}%` : '生成中…') : '排队等待中'}</span>
                     </div>
                     <div className={styles.progress} data-indeterminate={pct === null}><span style={pct !== null ? { width: `${pct}%` } : undefined} /></div>
                   </div>

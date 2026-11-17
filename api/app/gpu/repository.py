@@ -1207,6 +1207,70 @@ class Repository:
             session.flush()
             return self._row(job)
 
+    def requeue_spec_fallback(self, job_id: str, owner_id: str, exhausted_spec_keys: list[str], next_spec: dict, message: str):
+        """Atomically requeue a cleaned capacity-failed Colab job onto a fallback GPU spec."""
+        retry_key = f"spec-fallback-{len(exhausted_spec_keys)}-{uuid.uuid4().hex[:12]}"
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job = session.scalar(
+                select(GpuJobRow).where(GpuJobRow.id == job_id, GpuJobRow.owner_id == owner_id).with_for_update()
+            )
+            if not job:
+                raise KeyError(job_id)
+            leases = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
+            if any(row.data.get("owner_job_id") == job_id and row.state != "deleted" for row in leases):
+                return None
+            data = copy.deepcopy(job.data)
+            keys = data.get("attempt_retry_keys") or []
+            history = data.get("attempt_history") or []
+            history.append(
+                {k: copy.deepcopy(v) for k, v in data.items() if k not in {"snapshot", "request_body", "attempt_history", "attempt_retry_keys"}}
+            )
+            transient = {
+                "execution_id", "lease_id", "outputs", "output_asset_ids", "persisted_outputs", "error_code", "error_message",
+                "cancel_requested", "requested_outcome", "cleanup_final_state", "cleanup_attempts", "cleanup_next_epoch",
+                "upload_attempts", "started_epoch", "stopped_at", "deadline_epoch", "validated_epoch", "budget_reserved",
+                "runtime_deleted", "actual_units", "prep_report", "progress", "awaiting_prep",
+                "instance_completion_recorded", "instance_id", "instance_state", "instance_bound", "account_id",
+                "requested_instance_id", "account_alias_snapshot", "selection_reason", "allocation_key",
+                "attempt_id", "runtime_id", "request_id", "stage", "worker_timings", "output_bytes",
+                "started_at", "finished_at", "poll_retry_count", "poll_retry_at", "gpu_reported", "gpu_diagnostics",
+            }
+            for k in transient:
+                data.pop(k, None)
+            policy = data.get("execution_policy")
+            if isinstance(policy, Mapping) and ("instance_id" in policy or "requested_instance_id" in policy):
+                data["execution_policy"] = {**policy, "instance_id": None, "requested_instance_id": None}
+            data.update(
+                state="queued",
+                exhausted_spec_keys=list(exhausted_spec_keys),
+                requested_spec=copy.deepcopy(next_spec),
+                attempt_history=history,
+                attempt_retry_keys=[*keys, retry_key],
+                attempt_id=retry_key,
+            )
+            job.data = data
+            job.state = "queued"
+            job.instance_id = None
+            job.account_id = None
+            job.version += 1
+            job.updated_at = utcnow()
+            session.add(
+                GpuEventRow(
+                    id=str(uuid.uuid4()),
+                    owner_id=owner_id,
+                    project_id=job.project_id,
+                    state="queued",
+                    version=0,
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                    data={"job_id": job_id, "state": "queued", "message": message},
+                )
+            )
+            if data.get("batch_id"):
+                self._refresh_batch(session, data["batch_id"], owner_id)
+            session.flush()
+            return self._row(job)
+
     def prepare_execution(self, job_id, owner_id, lease_id, now):
         """Persist execution identity before start, atomically with its attempt record."""
         with self.store.db_lock(), self.store.Session.begin() as session:

@@ -63,25 +63,53 @@ export function resolveGpuCheckRequest(
 }
 
 /** Keep the complete official spec object; never stringify its structured key. */
-export function selectEligibleColabGpuSpec(
+/**
+ * Rank eligible GPU specs: prefer A100 first, then fall back to the workflow's
+ * declared compute_spec (T4 / L4), and finally L4 for T4 image workflows.
+ */
+export function rankColabGpuSpecs(
   specs: ComputeSpec[],
-  preferredKey?: Record<string, unknown> | null,
-): ComputeSpec | null {
+  fallbackKey?: Record<string, unknown> | null,
+): ComputeSpec[] {
   const gpus = specs.filter((spec) => {
     if (spec.eligible !== true || !spec.key || typeof spec.key !== 'object' || Array.isArray(spec.key)) return false;
     const variant = String((spec.key as Record<string, unknown>).variant || '');
     return variant === 'VARIANT_GPU' || variant === 'GPU';
   });
-  if (preferredKey && typeof preferredKey === 'object') {
-    const accel = String(preferredKey.accelerator || '').toUpperCase();
-    const shape = String(preferredKey.shape || '').toUpperCase();
-    const exact = gpus.find((s) => {
-      const k = s.key as Record<string, unknown>;
-      return String(k.accelerator || '').toUpperCase() === accel && (!shape || String(k.shape || '').toUpperCase() === shape);
-    });
-    if (exact) return exact;
-    const sameGpu = accel ? gpus.find((s) => String((s.key as Record<string, unknown>).accelerator || '').toUpperCase() === accel) : null;
-    if (sameGpu) return sameGpu;
+  if (!gpus.length) return [];
+
+  const accelOf = (s: ComputeSpec) => String((s.key as Record<string, unknown>).accelerator || '').toUpperCase();
+  const shapeOf = (s: ComputeSpec) => String((s.key as Record<string, unknown>).shape || '').toUpperCase();
+  const fbAccel = fallbackKey && typeof fallbackKey === 'object' ? String(fallbackKey.accelerator || '').toUpperCase() : '';
+  const fbShape = fallbackKey && typeof fallbackKey === 'object' ? String(fallbackKey.shape || '').toUpperCase() : '';
+
+  const out: ComputeSpec[] = [];
+  const push = (item?: ComputeSpec) => { if (item && !out.includes(item)) out.push(item); };
+
+  // 1. Prefer A100 first (HighMem preferred)
+  push(gpus.find((s) => accelOf(s) === 'A100' && shapeOf(s) === 'SHAPE_HIGHMEM') || gpus.find((s) => accelOf(s) === 'A100'));
+
+  // 2. Fallback to workflow's declared GPU (e.g. T4 HighMem for Krea, L4 for MiniMax H3)
+  if (fbAccel) {
+    push(gpus.find((s) => accelOf(s) === fbAccel && (!fbShape || shapeOf(s) === fbShape)));
+    push(gpus.find((s) => accelOf(s) === fbAccel));
   }
-  return gpus[0] || null;
+
+  // 3. If workflow wasn't already L4, also allow falling back to L4 (24GB VRAM); never downgrade L4 video to 15GB T4
+  if (fbAccel !== 'L4') {
+    push(gpus.find((s) => accelOf(s) === 'L4'));
+    if (!fbAccel) {
+      push(gpus.find((s) => accelOf(s) === 'T4' && shapeOf(s) === 'SHAPE_HIGHMEM') || gpus.find((s) => accelOf(s) === 'T4'));
+    }
+  }
+
+  if (!out.length) push(gpus[0]);
+  return out;
+}
+
+export function selectEligibleColabGpuSpec(
+  specs: ComputeSpec[],
+  fallbackKey?: Record<string, unknown> | null,
+): ComputeSpec | null {
+  return rankColabGpuSpecs(specs, fallbackKey)[0] || null;
 }

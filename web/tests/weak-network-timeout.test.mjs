@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { transform } from 'esbuild';
 import { smokeIdempotencyKey } from '../src/lib/activation-resume.ts';
-import { selectEligibleColabGpuSpec } from '../src/lib/colab-check.ts';
+import { rankColabGpuSpecs, selectEligibleColabGpuSpec } from '../src/lib/colab-check.ts';
 
 async function loadApi() {
   const sourcePath = join(process.cwd(), 'src/lib/gpu-api.ts');
@@ -106,17 +106,21 @@ test('smokeIdempotencyKey rotates after a terminal failed smoke job instead of r
   assert.equal(smokeIdempotencyKey('wf-1', 'proj-1', [], 'failed-job-0325'), afterFailed);
 });
 
-test('selectEligibleColabGpuSpec prefers workflow manifest compute_spec over A100 first entry', () => {
+test('rankColabGpuSpecs prefers A100 first, then falls back to T4/L4 without downgrading L4 video to T4', () => {
   const a100 = { key: { variant: 'VARIANT_GPU', accelerator: 'A100', shape: 'SHAPE_HIGHMEM' }, eligible: true };
   const t4High = { key: { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }, eligible: true };
   const l4 = { key: { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }, eligible: true };
 
   assert.deepEqual(
-    selectEligibleColabGpuSpec([a100, t4High, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
-    t4High,
+    selectEligibleColabGpuSpec([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
+    a100,
   );
   assert.deepEqual(
-    selectEligibleColabGpuSpec([a100, t4High, l4], { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }),
-    l4,
+    rankColabGpuSpecs([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
+    [a100, t4High, l4],
+  );
+  assert.deepEqual(
+    rankColabGpuSpecs([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }),
+    [a100, l4],
   );
 });

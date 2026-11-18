@@ -186,7 +186,9 @@ export interface GpuJobSafetyFields {
   instance_label?: string | null;
   instance_state?: GpuInstanceState | null;
   gpu_reported?: string | null;
-  retained_until?: string | null;
+  retained_until?: string | number | null;
+  idle_deadline_at?: string | number | null;
+  retention_mode?: string | null;
   runtime_deleted?: boolean | null;
   stage?: string | null;
   actual_units?: number | null;

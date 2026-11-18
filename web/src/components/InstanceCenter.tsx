@@ -8,7 +8,7 @@ import { gpuLabel } from '../lib/gpu-label';
 import styles from './v020.module.css';
 
 type Filter = 'current' | 'active' | 'retained' | 'history';
-type Action = 'retain' | 'stop';
+type Action = 'retain' | 'unretain' | 'stop';
 type Detail = GpuInstance & {
   jobs?: Array<Record<string, unknown>>;
   events?: Array<Record<string, unknown>>;
@@ -72,7 +72,12 @@ function isActive(instance: GpuInstance): boolean {
 
 function isRetained(instance: GpuInstance): boolean {
   const state = String(instance.state || '').toLowerCase();
-  return isActive(instance) && state !== 'releasing' && (state === 'retained_idle' || instance.retained_until != null);
+  return isActive(instance) && state !== 'releasing' && (
+    state === 'retained_idle'
+    || instance.retention_mode === 'retain'
+    || instance.retention_mode === 'smart'
+    || instance.retained_until != null
+  );
 }
 
 function errorText(cause: unknown): string {
@@ -165,6 +170,15 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
         }, keyFor(action, id)) as unknown as GpuInstance;
         clearKey(action, id);
         updateAfterWrite(result, '实例已确认进入保留策略。');
+      } else if (action === 'unretain') {
+        const version = typeof instance.version === 'number' && Number.isFinite(instance.version) ? instance.version : 0;
+        const result = await setInstanceRetention(id, {
+          retention_mode: 'save',
+          idle_minutes: 0,
+          expected_version: version,
+        }, keyFor(action, id)) as unknown as GpuInstance;
+        clearKey(action, id);
+        updateAfterWrite(result, '已取消保留策略：若任务正在运行，完成后将自动释放机器；若当前空闲将立即进入释放。');
       } else {
         const result = await stopInstance(id, keyFor(action, id)) as unknown as GpuInstance;
         clearKey(action, id);
@@ -229,6 +243,7 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
             {onContinue && canMutate && <button type="button" className={styles.button} onClick={() => onContinue(instance)}>续用</button>}
             {onOpenWorkbench && <button type="button" className={styles.buttonSecondary} onClick={() => chooseWorkbench(instance)}><Wrench size={15} aria-hidden />{canMutate ? '工作台' : '工作台历史'}</button>}
             {canMutate && <button type="button" className={styles.buttonSecondary} disabled={busy === `retain:${id}`} onClick={() => setConfirm({ action: 'retain', instance })}><Timer size={15} aria-hidden />保留</button>}
+            {canMutate && isRetained(instance) && <button type="button" className={styles.buttonSecondary} disabled={busy === `unretain:${id}`} onClick={() => setConfirm({ action: 'unretain', instance })}>取消保留</button>}
             {canMutate && <button type="button" className={styles.buttonDanger} disabled={busy === `stop:${id}`} onClick={() => setConfirm({ action: 'stop', instance })}><Square size={14} aria-hidden />停止</button>}
           </div>
           {isSelected && detail && <div className={styles.detailPanel} aria-label={`${label(instance)}详情`}>
@@ -241,6 +256,6 @@ export function InstanceCenter({ instances = [], onContinue, onOpenWorkbench, on
         </article>;
       })}
     </div>}
-    {confirm && <div className={styles.sheetBackdrop} role="presentation"><div className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="instance-confirm-title"><h3 id="instance-confirm-title">{confirm.action === 'stop' ? '确认停止实例？' : '确认保留实例？'}</h3><p className={styles.muted}>{confirm.action === 'stop' ? '停止请求提交后，实例进入释放中，远端释放完成后显示为已释放。' : '实例会保持可续用状态，并按服务端策略在空闲后释放。'}</p>{confirm.action === 'retain' && <label className={styles.field}>空闲保留分钟数<input type="number" min={0} max={30} value={retainMinutes} onChange={(event) => setRetainMinutes(Number(event.target.value) || 0)} /></label>}{error && <p className={styles.error} role="alert">{error}</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => { if (!busy) setConfirm(null); }}>取消</button><button type="button" className={confirm.action === 'stop' ? styles.buttonDanger : styles.button} disabled={Boolean(busy)} onClick={() => void submitAction()}>{busy ? '提交中…' : confirm.action === 'stop' ? '确认停止' : '确认保留'}</button></div></div></div>}
+    {confirm && <div className={styles.sheetBackdrop} role="presentation"><div className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="instance-confirm-title"><h3 id="instance-confirm-title">{confirm.action === 'stop' ? '确认停止实例？' : confirm.action === 'unretain' ? '确认取消保留实例？' : '确认保留实例？'}</h3><p className={styles.muted}>{confirm.action === 'stop' ? '停止请求提交后，实例进入释放中，远端释放完成后显示为已释放。' : confirm.action === 'unretain' ? '取消保留不会中断当前运行中的任务：运行结束后将按默认策略释放机器；若机器当前处于空闲保留，则会立即进入释放。' : '实例会保持可续用状态，并按服务端策略在空闲后释放。'}</p>{confirm.action === 'retain' && <label className={styles.field}>空闲保留分钟数<input type="number" min={0} max={30} value={retainMinutes} onChange={(event) => setRetainMinutes(Number(event.target.value) || 0)} /></label>}{error && <p className={styles.error} role="alert">{error}</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => { if (!busy) setConfirm(null); }}>取消</button><button type="button" className={confirm.action === 'stop' ? styles.buttonDanger : styles.button} disabled={Boolean(busy)} onClick={() => void submitAction()}>{busy ? '提交中…' : confirm.action === 'stop' ? '确认停止' : confirm.action === 'unretain' ? '确认取消保留' : '确认保留'}</button></div></div></div>}
   </section>;
 }

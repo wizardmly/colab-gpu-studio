@@ -62,6 +62,8 @@ def public_job(job, *, include_runtime_logs=False):
         "instance_state",
         "gpu_reported",
         "retained_until",
+        "idle_deadline_at",
+        "retention_mode",
         "selection_reason",
         "poll_retry_count",
         "mcp_rate_limited",

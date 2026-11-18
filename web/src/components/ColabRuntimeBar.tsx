@@ -48,6 +48,7 @@ export interface ColabRuntimeBarProps {
   loadingCheck: boolean;
   onCheckGpu: () => void;
   onRetainInstance: (instance: GpuInstance) => void;
+  onCancelRetainInstance?: (instance: GpuInstance) => void;
   onStopInstance: (instance: GpuInstance) => void;
   onEmergencyStop: () => void;
   onOpenCompute: () => void;
@@ -74,6 +75,7 @@ export function ColabRuntimeBar({
   loadingCheck,
   onCheckGpu,
   onRetainInstance,
+  onCancelRetainInstance,
   onStopInstance,
   onEmergencyStop,
   onOpenCompute,
@@ -278,25 +280,42 @@ export function ColabRuntimeBar({
                           {pinned ? (reusable ? '已锁定复用' : '已锁定接力') : (reusable ? '复用此热机' : '排队接力此机')}
                         </button>
                       )}
-                      {state !== 'releasing' && (
-                        <>
-                          <button
-                            type="button"
-                            className="button secondary small"
-                            title="延长空闲保留"
-                            onClick={() => onRetainInstance(inst)}
-                          >
-                            <Timer size={13} aria-hidden />保留
-                          </button>
-                          <button
-                            type="button"
-                            className="button danger small"
-                            onClick={() => onStopInstance(inst)}
-                          >
-                            <Square size={12} aria-hidden />释放
-                          </button>
-                        </>
-                      )}
+                      {state !== 'releasing' && (() => {
+                        const instRetained = state === 'retained_idle'
+                          || inst.retention_mode === 'retain'
+                          || inst.retention_mode === 'smart'
+                          || Boolean(inst.retained_until);
+                        return (
+                          <>
+                            {instRetained && onCancelRetainInstance ? (
+                              <button
+                                type="button"
+                                className="button retained small"
+                                title="取消空闲保留（任务完成后自动释放，空闲时立即释放）"
+                                onClick={() => onCancelRetainInstance(inst)}
+                              >
+                                <Timer size={13} aria-hidden />已保留 · 取消
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                className="button secondary small"
+                                title="延长空闲保留"
+                                onClick={() => onRetainInstance(inst)}
+                              >
+                                <Timer size={13} aria-hidden />保留
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="button danger small"
+                              onClick={() => onStopInstance(inst)}
+                            >
+                              <Square size={12} aria-hidden />释放
+                            </button>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 );

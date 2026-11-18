@@ -323,7 +323,16 @@ export default function App() {
 
   const enrichedJobs = useMemo(() => jobs.map((job) => {
     const instance = instances.find((item) => instanceIdOf(item) === job.instance_id);
-    return instance ? { ...job, instance_state: instance.state, runtime_deleted: instance.state === 'deleted' } : job;
+    if (!instance) return job;
+    const unretained = instance.retention_mode === 'save' && instance.state !== 'retained_idle';
+    return {
+      ...job,
+      instance_state: instance.state,
+      retention_mode: instance.retention_mode ?? job.retention_mode,
+      idle_deadline_at: unretained ? null : (instance.idle_deadline_at ?? job.idle_deadline_at),
+      retained_until: unretained ? null : (instance.retained_until ?? job.retained_until),
+      runtime_deleted: instance.state === 'deleted',
+    };
   }), [jobs, instances]);
 
   const completedOutputsSignature = useMemo(() => jobs
@@ -845,13 +854,13 @@ export default function App() {
     setTab('创作');
   }
 
-  async function retainInstanceById(instanceId: string) {
-    await action('retain', async () => {
-      const operation = `retain:${instanceId}`;
-      const writeKey = instanceRetentionKeys.current[operation] ||= `retain:${instanceId}:${keyId()}`;
+  async function retainInstanceById(instanceId: string, mode: 'retain' | 'save' = 'retain') {
+    await action(mode === 'save' ? 'unretain' : 'retain', async () => {
+      const operation = `${mode}:${instanceId}`;
+      const writeKey = instanceRetentionKeys.current[operation] ||= `${mode}:${instanceId}:${keyId()}`;
       const updatedInstance = await apiFetch<GpuInstance>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/retention`, {
         method: 'PATCH', headers: { 'Idempotency-Key': writeKey },
-        body: JSON.stringify({ retention_mode: 'retain', idle_minutes: runtimeChoice.retainIdleMinutes }),
+        body: JSON.stringify({ retention_mode: mode, idle_minutes: mode === 'retain' ? runtimeChoice.retainIdleMinutes : 0 }),
       });
       delete instanceRetentionKeys.current[operation];
       setInstances((current) => {
@@ -863,7 +872,9 @@ export default function App() {
         return next;
       });
       setJobs((current) => current.map((item) => item.instance_id === instanceId
-        ? { ...item, lifecycle: 'retain', retained_until: updatedInstance.retained_until, instance_state: updatedInstance.state }
+        ? (mode === 'save'
+          ? { ...item, lifecycle: 'save', retention_mode: 'save', retained_until: null, idle_deadline_at: null, instance_state: updatedInstance.state }
+          : { ...item, lifecycle: 'retain', retention_mode: 'retain', retained_until: updatedInstance.retained_until ?? updatedInstance.idle_deadline_at, idle_deadline_at: updatedInstance.idle_deadline_at, instance_state: updatedInstance.state })
         : item));
       await refreshJobs();
     });
@@ -872,13 +883,25 @@ export default function App() {
   async function retainJob(job: GpuJob) {
     const instanceId = String(job.instance_id || '');
     if (!instanceId) { setJobError('该任务尚未分配实例，暂不能保留。'); return; }
-    await retainInstanceById(instanceId);
+    await retainInstanceById(instanceId, 'retain');
+  }
+
+  async function cancelRetainJob(job: GpuJob) {
+    const instanceId = String(job.instance_id || '');
+    if (!instanceId) { setJobError('该任务尚未分配实例，暂不能取消保留。'); return; }
+    await retainInstanceById(instanceId, 'save');
   }
 
   async function retainInstance(instance: GpuInstance) {
     const id = instanceIdOf(instance);
     if (!id) return;
-    await retainInstanceById(id);
+    await retainInstanceById(id, 'retain');
+  }
+
+  async function cancelRetainInstance(instance: GpuInstance) {
+    const id = instanceIdOf(instance);
+    if (!id) return;
+    await retainInstanceById(id, 'save');
   }
 
   async function quickEnableAccount(account: GpuAccount) {
@@ -1015,6 +1038,7 @@ export default function App() {
             loadingCheck={loading === 'check'}
             onCheckGpu={() => void checkGpu()}
             onRetainInstance={(instance) => void retainInstance(instance)}
+            onCancelRetainInstance={(instance) => void cancelRetainInstance(instance)}
             onStopInstance={(instance) => setStopTarget(instance)}
             onEmergencyStop={() => setConfirm('stop')}
             onOpenCompute={() => openSettings('usage')}
@@ -1138,6 +1162,7 @@ export default function App() {
             onRetry={retryJobById}
             onDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
             onRetain={(job) => void retainJob(job)}
+            onCancelRetain={(job) => void cancelRetainJob(job)}
             onArchive={archiveJob}
             onRelease={releaseJobInstance}
             onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); openSettings('resources'); } }}

@@ -15,7 +15,7 @@ const FAILED = ['failed', 'failed_final', 'cancelled', 'cancelled_local', 'block
 const PRIMARY_FILTERS = ['all', 'running', 'completed'];
 
 export function TasksPanel({
-  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance, onArchive, onRelease,
+  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onCancelRetain, onInstance, onArchive, onRelease,
 }: {
   jobs: GpuJob[];
   error: string;
@@ -25,6 +25,7 @@ export function TasksPanel({
   onRetry: (id: string) => void;
   onDetail: (job: GpuJob) => void;
   onRetain?: (job: GpuJob) => void;
+  onCancelRetain?: (job: GpuJob) => void;
   onInstance?: (job: GpuJob) => void;
   onArchive?: (job: GpuJob, archived: boolean) => Promise<unknown>;
   onRelease?: (job: GpuJob) => Promise<unknown>;
@@ -216,7 +217,18 @@ export function TasksPanel({
               instanceId ? readableState(String(job.instance_state || '未知')) : awaitingPrep ? '缓存完成后申请 GPU' : terminalStates.has(s) ? '未分配机器' : '等待分配机器',
             ].filter(Boolean).join(' · ');
             const liveInstance = canRetainJobInstance(job);
-            const retained = liveInstance && Boolean(job.retained_until || job.instance_state === 'retained_idle');
+            const retained = liveInstance && (
+              job.instance_state === 'retained_idle'
+              || job.retention_mode === 'retain'
+              || job.retention_mode === 'smart'
+              || Boolean(job.retained_until)
+            );
+            const retainedCutoff = job.retained_until || job.idle_deadline_at;
+            const retainedTitle = retainedCutoff
+              ? `已保留至 ${formatDateTime(String(retainedCutoff))}，点击取消保留`
+              : (!terminalStates.has(s)
+                ? '已开启保留，点击取消保留（当前任务跑完后自动释放机器）'
+                : '已开启保留，点击取消保留并释放空闲机器');
 
             return (
               <article className={styles.jobCard} key={jobKey}>
@@ -252,7 +264,17 @@ export function TasksPanel({
                 <div className={styles.cardActions}>
                   <button className={`button small ${styles.jobMainAction}`} type="button" onClick={() => onDetail(job)}>查看详情</button>
                   {liveInstance && !retained && onRetain && <button className="button secondary small" type="button" onClick={() => onRetain(job)}>保留这台机器</button>}
-                  {retained && <span className="pill">已保留{job.retained_until ? `至 ${formatDateTime(String(job.retained_until))}` : ''}</span>}
+                  {retained && (onCancelRetain || onRetain) && (
+                    <button
+                      className={`button secondary small ${styles.retainedBtn}`}
+                      type="button"
+                      title={retainedTitle}
+                      onClick={() => (onCancelRetain ? onCancelRetain(job) : onRetain?.(job))}
+                    >
+                      <Check size={13} strokeWidth={2} aria-hidden />
+                      已保留 · 取消保留
+                    </button>
+                  )}
                   {!terminalStates.has(s) ? (
                     <button className={`button secondary small ${styles.jobMainAction}`} type="button" onClick={() => onCancel(job.id)}>
                       <Square size={13} strokeWidth={1.8} aria-hidden />取消

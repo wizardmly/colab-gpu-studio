@@ -576,3 +576,66 @@ test('CreatePanel SSR renders spec-aware queue toggle and button label when task
   assert.match(html, /新开机器并行跑/);
   assert.match(html, /加入 L4 排队（自动接力热机）/);
 });
+
+test('TasksPanel renders retained state as a uniform action button with cancel-retention support', async () => {
+  const React = requireFromWeb('react');
+  const { renderToStaticMarkup } = requireFromWeb('react-dom/server');
+  const { TasksPanel } = await loadSsrExports(
+    `export { TasksPanel } from './src/pages/JobsPage.tsx';`,
+    'tasks-panel-retained-ssr-entry.ts',
+  );
+  const noop = () => {};
+  const retainedJobHtml = renderToStaticMarkup(React.createElement(TasksPanel, {
+    jobs: [{
+      id: 'job-ret-1',
+      project_id: 'proj-1',
+      workflow_key: 'minimax-h3-ref2v',
+      provider: 'colab',
+      state: 'running',
+      stage: 'sampling',
+      instance_id: 'inst-1',
+      instance_state: 'retained_idle',
+      retention_mode: 'retain',
+      retained_until: '2026-11-18T19:30:00Z',
+      runtime_deleted: false,
+    }],
+    error: '',
+    refreshing: false,
+    onRefresh: noop,
+    onCancel: noop,
+    onRetry: noop,
+    onDetail: noop,
+    onRetain: noop,
+    onCancelRetain: noop,
+  }));
+
+  assert.doesNotMatch(retainedJobHtml, /<span class="pill">已保留/);
+  assert.match(retainedJobHtml, /<button[^>]*class="[^"]*retainedBtn[^"]*"/);
+  assert.match(retainedJobHtml, /已保留 · 取消保留/);
+
+  const unretainedJobHtml = renderToStaticMarkup(React.createElement(TasksPanel, {
+    jobs: [{
+      id: 'job-unret-2',
+      project_id: 'proj-1',
+      workflow_key: 'minimax-h3-ref2v',
+      provider: 'colab',
+      state: 'running',
+      stage: 'sampling',
+      instance_id: 'inst-2',
+      instance_state: 'busy',
+      retention_mode: 'save',
+      runtime_deleted: false,
+    }],
+    error: '',
+    refreshing: false,
+    onRefresh: noop,
+    onCancel: noop,
+    onRetry: noop,
+    onDetail: noop,
+    onRetain: noop,
+    onCancelRetain: noop,
+  }));
+
+  assert.match(unretainedJobHtml, /保留这台机器/);
+  assert.doesNotMatch(unretainedJobHtml, /已保留/);
+});

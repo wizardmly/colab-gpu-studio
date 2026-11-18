@@ -278,6 +278,8 @@ svg { flex: none; }
 .button.secondary:hover:not(:disabled) { background: var(--card-2); }
 .button.danger { background: transparent; color: var(--danger); border-color: var(--danger-line); }
 .button.danger:hover:not(:disabled) { background: var(--card-2); }
+.button.retained { background: var(--good-bg); color: var(--good); border-color: var(--good-line); }
+.button.retained:hover:not(:disabled) { background: var(--card-2); color: var(--text); border-color: var(--line-strong); }
 .button.small { min-height: 32px; padding: 0 12px; font-size: 0.8rem; border-radius: 10px; }
 .button.block { width: 100%; }
 .button.big { width: 100%; min-height: 52px; font-size: 1.02rem; border-radius: 14px; }

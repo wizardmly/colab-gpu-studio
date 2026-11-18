@@ -371,3 +371,73 @@ def test_new_instance_queue_mode_allocates_second_machine_in_parallel():
     assert j2_cur["instance_id"] != j1_cur["instance_id"]
     assert provider.create_calls == 2
     assert len(repo.list("instances", OWNER["id"])) == 2
+
+
+def test_cancel_retention_while_running_restores_busy_and_releases_on_complete_and_idle_unretain_releases():
+    repo = Repository(Store("sqlite:///:memory:"))
+    _setup_account(repo, "acct-1", provider="colab")
+    now = [1000.0]
+    provider = MultiSpecProvider()
+    executor = MockGPUExecutor(polls_before_complete=3)
+    scheduler = _make_scheduler(repo, provider, executor, clock_box=now)
+
+    # 1. Start a running L4 job with lifecycle="save", retain it mid-run, then cancel retention mid-run.
+    job1 = _create_colab_job(repo, "ret-run-1", accel="L4", lifecycle="save", max_runtime_minutes=30)
+    for _ in range(12):
+        scheduler.tick()
+        if repo.get("jobs", job1["id"], OWNER["id"])["state"] == "running":
+            break
+    j1_running = repo.get("jobs", job1["id"], OWNER["id"])
+    assert j1_running["state"] == "running"
+    inst1_id = j1_running["instance_id"]
+
+    retained = scheduler.instances.retention(OWNER["id"], inst1_id, "retain", 15, "mid-run-retain")
+    assert retained["state"] == "retained_idle"
+    assert retained["retention_mode"] == "retain"
+    assert repo.get("jobs", job1["id"], OWNER["id"])["retention_mode"] == "retain"
+    assert repo.get("jobs", job1["id"], OWNER["id"])["retained_until"] is not None
+
+    unretained = scheduler.instances.retention(OWNER["id"], inst1_id, "save", 0, "mid-run-unretain")
+    assert unretained["state"] == "busy"
+    assert unretained["retention_mode"] == "save"
+    assert unretained["idle_deadline_at"] is None
+    j1_unretained = repo.get("jobs", job1["id"], OWNER["id"])
+    assert j1_unretained["retention_mode"] == "save"
+    assert j1_unretained["retained_until"] is None
+    assert j1_unretained["instance_state"] == "busy"
+
+    # Finishing job1 must now release the runtime instead of retaining it idle.
+    for _ in range(30):
+        now[0] += 2.0
+        scheduler.tick()
+        if repo.get("jobs", job1["id"], OWNER["id"])["state"] == "completed":
+            break
+    assert repo.get("jobs", job1["id"], OWNER["id"])["state"] == "completed"
+    assert provider.delete_calls == 1
+    assert repo.get("instances", inst1_id, OWNER["id"])["state"] == "deleted"
+
+    # 2. If a job already finished into retained_idle, cancelling retention moves it to releasing and watchdog deletes it.
+    now[0] += 10.0
+    job2 = _create_colab_job(repo, "ret-idle-2", accel="L4", lifecycle="save", max_runtime_minutes=30)
+    for _ in range(12):
+        scheduler.tick()
+        if repo.get("jobs", job2["id"], OWNER["id"])["state"] == "running":
+            break
+    inst2_id = repo.get("jobs", job2["id"], OWNER["id"])["instance_id"]
+    scheduler.instances.retention(OWNER["id"], inst2_id, "retain", 15, "keep-idle")
+    for _ in range(30):
+        now[0] += 2.0
+        scheduler.tick()
+        if repo.get("jobs", job2["id"], OWNER["id"])["state"] == "completed":
+            break
+    assert repo.get("instances", inst2_id, OWNER["id"])["state"] == "retained_idle"
+    assert provider.delete_calls == 1
+
+    cancelled_idle = scheduler.instances.retention(OWNER["id"], inst2_id, "save", 0, "cancel-idle-retain")
+    assert cancelled_idle["state"] == "releasing"
+    assert cancelled_idle["retention_mode"] == "save"
+    assert repo.get("jobs", job2["id"], OWNER["id"])["retained_until"] is None
+
+    scheduler.watchdog()
+    assert provider.delete_calls == 2
+    assert repo.get("instances", inst2_id, OWNER["id"])["state"] == "deleted"

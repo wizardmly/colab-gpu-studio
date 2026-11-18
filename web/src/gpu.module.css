@@ -601,7 +601,7 @@
   .jobTop { grid-area: 1 / 1; align-items: center; }
   .jobThumb { width: 48px; height: 48px; }
   .jobTitleRow { justify-content: flex-start; align-items: center; }
-  .jobList .cardActions { grid-area: 1 / 2; flex-wrap: wrap; max-width: 320px; justify-content: flex-end; }
+  .jobList .cardActions { grid-area: 1 / 2; flex-wrap: wrap; max-width: 420px; justify-content: flex-end; }
   .jobList .cardActions > button { flex: 0 0 auto; }
   .jobList .progressBlock, .jobError { grid-column: 1 / -1; }
   .galleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 16px; }
@@ -660,3 +660,5 @@
 .errorText { font-size: 13px; color: #a63b32; }
 .checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .queueModeRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding-top: 2px; }
+.retainedBtn { border-color: var(--good-line); background: var(--good-bg); color: var(--good); }
+.retainedBtn:hover:not(:disabled) { border-color: var(--line-strong); background: var(--card-2); color: var(--text); }

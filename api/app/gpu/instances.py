@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Mapping
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -736,6 +737,7 @@ class InstanceService:
                 data["retain_idle_minutes"] = minutes
                 deadline = self.clock() + minutes * 60
                 data["idle_deadline_at"] = min(deadline, float(hard)) if hard is not None else deadline
+                data["retained_until"] = data["idle_deadline_at"]
                 data["retention_mode"] = mode
                 data["retention_overridden"] = True
                 # Retention is an explicit lifecycle transition.  The
@@ -743,9 +745,52 @@ class InstanceService:
                 # the durable instance policy is already retained_idle.
                 state = "retained_idle"
             else:
-                data.update(retention_mode="save", retention_overridden=False, idle_deadline_at=None, retention_reserved=0.0)
-                state = "releasing" if data.get("current_job_id") is None else instance.state
+                has_jobs_table = False
+                try:
+                    has_jobs_table = sa_inspect(session.connection()).has_table(self._model("jobs").__tablename__)
+                except (ValueError, Exception):
+                    has_jobs_table = False
+                current_job_id = data.get("current_job_id") or instance.current_job_id
+                if current_job_id and has_jobs_table:
+                    current_job = self._find(session, "jobs", current_job_id, owner)
+                    if current_job is not None and current_job.state in {"completed", "failed", "cancelled"}:
+                        data["current_job_id"] = None
+                data.update(
+                    retention_mode="save",
+                    retention_overridden=False,
+                    idle_deadline_at=None,
+                    retained_until=None,
+                    retention_reserved=0.0,
+                )
+                if data.get("current_job_id") is None:
+                    state = "releasing"
+                else:
+                    state = "busy" if instance.state == "retained_idle" else instance.state
             self._set(instance, data, state=state, session=session)
+            try:
+                has_jobs_sync = sa_inspect(session.connection()).has_table(self._model("jobs").__tablename__)
+            except (ValueError, Exception):
+                has_jobs_sync = False
+            if has_jobs_sync:
+                for job_row in self._rows(session, "jobs", owner):
+                    j_data = self._data(job_row)
+                    if j_data.get("instance_id") != id and getattr(job_row, "instance_id", None) != id:
+                        continue
+                    if mode in {"retain", "smart"}:
+                        j_data.update(
+                            retention_mode=mode,
+                            retained_until=data.get("idle_deadline_at"),
+                            idle_deadline_at=data.get("idle_deadline_at"),
+                            instance_state=state,
+                        )
+                    else:
+                        j_data.update(
+                            retention_mode="save",
+                            retained_until=None,
+                            idle_deadline_at=None,
+                            instance_state=state,
+                        )
+                    self._set(job_row, j_data, state=job_row.state, session=session)
             result = self.public(self._dict(instance))
             self._finish_operation(operation, result, session)
             self._emit(session, owner, instance.project_id, id, data.get("current_job_id"), state, "retention updated")

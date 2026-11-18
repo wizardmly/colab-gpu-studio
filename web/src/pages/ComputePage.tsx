@@ -101,24 +101,27 @@ export function ComputePage({
         <p className="muted small">Google 不提供按任务账单，实测值取任务前后账户余额差；同一账号并行时只能算区间。</p>
       </Card>
 
-      <Card icon={<Layers size={17} strokeWidth={1.6} aria-hidden />} title="运行策略">
-        <div className={styles.strategyList}>
-          {STRATEGIES.map((s) => {
-            const Icon = STRATEGY_ICON[s.value];
-            const isOpen = open === s.value;
-            return (
-              <div key={s.value} className={styles.strategy} data-open={isOpen}>
-                <button type="button" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? '' : s.value)}>
-                  <Icon size={18} strokeWidth={1.5} aria-hidden />
-                  <span><strong>{s.name}</strong><small className="muted">{s.short}</small></span>
-                  <ChevronDown size={16} strokeWidth={1.6} aria-hidden className={styles.chev} />
-                </button>
-                {isOpen && <p className="muted small">{s.long}<br />在「创作 › 运行设置 › 运行策略」里选择。</p>}
-              </div>
-            );
-          })}
+      <details className="foldable">
+        <summary><span className={styles.advTitle}><Layers size={16} strokeWidth={1.6} aria-hidden />运行策略说明</span></summary>
+        <div className="foldContent">
+          <div className={styles.strategyList}>
+            {STRATEGIES.map((s) => {
+              const Icon = STRATEGY_ICON[s.value];
+              const isOpen = open === s.value;
+              return (
+                <div key={s.value} className={styles.strategy} data-open={isOpen}>
+                  <button type="button" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? '' : s.value)}>
+                    <Icon size={18} strokeWidth={1.5} aria-hidden />
+                    <span><strong>{s.name}</strong><small className="muted">{s.short}</small></span>
+                    <ChevronDown size={16} strokeWidth={1.6} aria-hidden className={styles.chev} />
+                  </button>
+                  {isOpen && <p className="muted small">{s.long}<br />在顶栏「Colab 运行时」或「创作 › 运行与超时微调」里选择。</p>}
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </Card>
+      </details>
 
       <div className={styles.note}><Info size={16} strokeWidth={1.6} aria-hidden /><span>{realEnabled ? '用量数据来自站内记录，可能与 Google 账单略有出入。' : '模拟模式的数据仅供演示，不代表真实账单。'}</span></div>
       </div>
@@ -140,7 +143,7 @@ export function ThemePicker() {
       <select id="theme-select" value={theme} onChange={(e) => change(e.target.value)}>
         <option value="dark">深色（黑底）</option>
         <option value="light">浅色（白底）</option>
-        <option value="system">跟随手机系统</option>
+        <option value="system">跟随系统</option>
       </select>
     </div>
   );

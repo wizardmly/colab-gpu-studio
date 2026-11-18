@@ -424,7 +424,7 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
               </div>
               <div className={styles.cardActions}>
                 <button type="button" className={styles.buttonSecondary} disabled={Boolean(busy)} onClick={() => { setEditingId(account.account_id); setEditAlias(account.alias || ''); }}>改名</button>
-                <button type="button" className={styles.buttonDanger} disabled={Boolean(busy)} onClick={() => setDisconnecting(account)}>解除连接</button>
+                <button type="button" className={styles.buttonDanger} disabled={Boolean(busy)} onClick={() => { setError(''); setDisconnecting(account); }}>解除连接</button>
                 {active > 0 && <span className={styles.warningInline}>活动资源 {active} 个，不能直接解除</span>}
                 {isBusy && <span className={styles.muted}>处理中…</span>}
               </div>
@@ -447,7 +447,7 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
         })}
       </div>}
 
-      {disconnecting && <div className={styles.sheetBackdrop} role="presentation"><section className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="disconnect-title"><h3 id="disconnect-title">确认解除「{disconnecting.alias}」？</h3>{activeCount(disconnecting) > 0 ? <p className={styles.warning}>检测到 {activeCount(disconnecting)} 个活动实例/任务。解除前必须由服务端执行安全停机检查；若仍无法安全停机，操作会失败，历史记录不会丢失。</p> : <p className={styles.muted}>只解除本站授权连接，不会删除历史任务和作品。服务端会再次检查活动资源。</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => setDisconnecting(null)} disabled={Boolean(busy)}>取消</button><button type="button" className={styles.buttonDanger} onClick={() => void disconnect()} disabled={Boolean(busy)}>{activeCount(disconnecting) ? '确认安全检查后解除' : '确认解除连接'}</button></div></section></div>}
+      {disconnecting && <div className={styles.sheetBackdrop} role="presentation"><section className={styles.sheet} role="dialog" aria-modal="true" aria-labelledby="disconnect-title"><h3 id="disconnect-title">确认解除「{disconnecting.alias}」？</h3>{activeCount(disconnecting) > 0 ? <p className={styles.warning}>检测到 {activeCount(disconnecting)} 个活动实例/任务。解除前必须由服务端执行安全停机检查；若仍无法安全停机，操作会失败，历史记录不会丢失。</p> : <p className={styles.muted}>只解除本站授权连接，不会删除历史任务和作品。服务端会再次检查活动资源。</p>}{error && <p className={styles.error} role="alert">{error}</p>}<div className={styles.sheetActions}><button type="button" className={styles.buttonSecondary} onClick={() => { setDisconnecting(null); setError(''); }} disabled={Boolean(busy)}>取消</button><button type="button" className={styles.buttonDanger} onClick={() => void disconnect()} disabled={Boolean(busy)}>{activeCount(disconnecting) ? '确认安全检查后解除' : '确认解除连接'}</button></div></section></div>}
     </section>
   );
 }

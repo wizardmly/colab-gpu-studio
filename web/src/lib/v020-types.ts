@@ -47,6 +47,7 @@ export interface GoogleAccount {
   alias: string;
   state: GoogleAccountState;
   enabled: boolean;
+  allow_allocation?: boolean;
   email_masked?: string | null;
   drive_account_id?: string | null;
   drive_account_alias?: string | null;
@@ -66,6 +67,7 @@ export interface GoogleAccount {
 export interface GoogleAccountCreateRequest {
   alias: string;
   enabled?: boolean;
+  allow_allocation?: boolean;
   drive_account_id?: string | null;
   allowed_project_ids?: string[];
   scheduling_policy?: string;
@@ -75,6 +77,7 @@ export interface GoogleAccountCreateRequest {
 export interface GoogleAccountUpdateRequest {
   alias?: string;
   enabled?: boolean;
+  allow_allocation?: boolean;
   drive_account_id?: string | null;
   allowed_project_ids?: string[];
   scheduling_policy?: string;

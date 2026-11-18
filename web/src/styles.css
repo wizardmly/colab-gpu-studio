@@ -15,6 +15,12 @@
   --primary-hover: #e6e6e6;
   --danger: #ff6b6b;
   --danger-line: rgba(255, 107, 107, 0.45);
+  --good: #4ade80;
+  --good-bg: rgba(74, 222, 128, 0.12);
+  --good-line: rgba(74, 222, 128, 0.38);
+  --warn: #fbbf24;
+  --warn-bg: rgba(251, 191, 36, 0.12);
+  --warn-line: rgba(251, 191, 36, 0.42);
   --overlay: rgba(0, 0, 0, 0.7);
 
   --r-sm: 8px;
@@ -46,6 +52,12 @@
   --primary-hover: #262626;
   --danger: #d93030;
   --danger-line: rgba(217, 48, 48, 0.45);
+  --good: #15803d;
+  --good-bg: rgba(21, 128, 61, 0.08);
+  --good-line: rgba(21, 128, 61, 0.35);
+  --warn: #b45309;
+  --warn-bg: rgba(180, 83, 9, 0.08);
+  --warn-line: rgba(180, 83, 9, 0.35);
   --overlay: rgba(0, 0, 0, 0.45);
   color-scheme: light;
 }
@@ -66,6 +78,12 @@
     --primary-hover: #262626;
     --danger: #d93030;
     --danger-line: rgba(217, 48, 48, 0.45);
+    --good: #15803d;
+    --good-bg: rgba(21, 128, 61, 0.08);
+    --good-line: rgba(21, 128, 61, 0.35);
+    --warn: #b45309;
+    --warn-bg: rgba(180, 83, 9, 0.08);
+    --warn-line: rgba(180, 83, 9, 0.35);
     --overlay: rgba(0, 0, 0, 0.45);
     color-scheme: light;
   }
@@ -332,3 +350,75 @@ details.foldable[open] > summary::after { transform: rotate(-135deg) translateY(
 
 .specList { display: flex; flex-wrap: wrap; gap: 6px; }
 .specList .muted { flex-basis: 100%; font-size: 0.75rem; }
+
+/* ───────── 顶栏 Colab 运行时胶囊与弹层 ───────── */
+.runtimeBar { position: relative; flex: none; }
+.runtimePill {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 36px; padding: 0 11px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-full);
+  background: var(--card); font-size: 0.82rem; font-weight: 550; white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.runtimePill:hover { background: var(--card-2); }
+.runtimePill[data-tone="warm"] { border-color: var(--good-line); background: var(--good-bg); }
+.runtimePill[data-tone="busy"] { border-color: var(--warn-line); background: var(--warn-bg); }
+.runtimePill[data-tone="attention"] { border-color: var(--warn-line); }
+.runtimeDot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.runtimeDot[data-tone="warm"], .runtimeDot[data-tone="ready"] { background: var(--good); box-shadow: 0 0 0 2px var(--good-bg); }
+.runtimeDot[data-tone="busy"] { background: var(--warn); animation: runtimePulse 1.4s ease-in-out infinite; }
+.runtimeDot[data-tone="attention"] { background: var(--warn); }
+.runtimePillTitle { font-weight: 600; }
+.runtimePillSub { color: var(--muted); font-size: 0.72rem; font-weight: 400; max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtimeChevOpen { transform: rotate(180deg); }
+@media (max-width: 639px) {
+  .runtimePill { padding: 0 9px; font-size: 0.78rem; }
+  .runtimePillSub { display: none; }
+  .projectChip { max-width: 98px; }
+}
+@keyframes runtimePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.82); }
+}
+.runtimeSpin { animation: runtimeSpin 1s linear infinite; }
+@keyframes runtimeSpin { to { transform: rotate(360deg); } }
+
+.runtimePopover {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 70;
+  width: min(420px, calc(100vw - 24px)); max-height: min(78dvh, 640px); overflow-y: auto;
+  display: grid; gap: 12px; padding: 14px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-lg);
+  background: var(--card); color: var(--text); box-shadow: 0 16px 40px var(--overlay);
+}
+.runtimePopHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.runtimePopHead strong { font-size: 0.95rem; font-weight: 650; }
+.runtimeSwitch {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px;
+  padding: 4px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+}
+.runtimeSwitch button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 0 8px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--muted); font-size: 0.8rem;
+}
+.runtimeSwitch button[data-active="true"] { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+.runtimeSwitch button:disabled { opacity: 0.4; cursor: not-allowed; }
+.runtimeNotice {
+  display: grid; gap: 8px; padding: 10px 12px;
+  border: 1px solid var(--warn-line); border-radius: var(--r-md); background: var(--warn-bg);
+}
+.runtimeMachines { display: grid; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line); }
+.runtimeSubhead { display: flex; align-items: center; justify-content: space-between; font-size: 0.8rem; font-weight: 600; color: var(--text-2); }
+.runtimeMachineRow {
+  display: grid; gap: 8px; padding: 10px;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+}
+.runtimeMachineRow[data-pinned="true"] { border-color: var(--good-line); background: var(--good-bg); }
+.runtimeMachineMeta { display: grid; gap: 2px; min-width: 0; }
+.runtimeMachineMeta strong { font-size: 0.84rem; font-weight: 600; overflow-wrap: anywhere; }
+.runtimeMachineBtns { display: flex; flex-wrap: wrap; gap: 6px; }
+.runtimeControls { display: grid; gap: 10px; padding-top: 4px; border-top: 1px solid var(--line); }
+.runtimeControls .field { gap: 4px; }
+.runtimeControls .field span { font-size: 0.76rem; color: var(--text-2); }
+.runtimeControls input, .runtimeControls select { min-height: 36px; font-size: 0.84rem; }
+.runtimePopFooter { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }

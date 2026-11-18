@@ -1,26 +1,24 @@
 import { SettingsPanel } from './pages/SettingsPage';
 import { GalleryPanel } from './pages/GalleryPage';
 import { TasksPanel } from './pages/JobsPage';
-import { CreatePanel } from './pages/CreatePage';
-import { ComputePage, ThemePicker } from './pages/ComputePage';
+import { CreatePanel, type RuntimeChoice } from './pages/CreatePage';
+import { ComputePage } from './pages/ComputePage';
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
 import {
-  apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
+  apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset,
   apiFetch,
   getGpuComputeSpecs, getGpuGallery, getGpuInstance, getGpuJob, getGpuJobs, getGpuModels, listGpuInstances,
-  getGpuPresets, getReferenceAssets, getGpuSettings, getGpuUsage, getGpuWorkflowSchema, getGpuWorkflows, getProjects, importGpuWorkflow,
-  isLoggedIn, login, publishGpuWorkflow, retryGpuJob, retryGpuAttempt, startGoogleAuth, stopGpuCompute, updateAsset, uploadAsset,
+  getGpuPresets, getGpuSettings, getGpuUsage, getGpuWorkflowSchema, getGpuWorkflows, getProjects, getReferenceAssets, importGpuWorkflow,
+  isLoggedIn, login, publishGpuWorkflow, retryGpuJob, retryGpuAttempt, stopGpuCompute, updateAsset, updateGoogleAccount, uploadAsset,
   validateGpuWorkflow, rollbackGpuWorkflow, deactivateGpuWorkflow, saveGpuPreset, setGpuJobArchived, stopInstance, ApiError, type ComputeSpec, type GalleryAsset, type GpuJob, type GpuPreset,
   type GpuManifest, type GpuModel, type GpuSettings, type GpuUsage, type GpuWorkflow, type Project, type Provider,
 } from './lib/gpu-api';
 import type { GpuAccount, GpuInstance } from './components/AccountDirectory';
-import type { RuntimeChoice } from './pages/CreatePage';
-import { GpuParamForm } from './components/GpuParamForm';
-import { ReferencePicker, referenceAssets, supportsReferences } from './components/ReferencePicker';
-import { GoogleOAuthSetup } from './components/GoogleOAuthSetup';
-import { ComputeSpecs } from './components/ComputeSpecs';
+import { ColabRuntimeBar } from './components/ColabRuntimeBar';
+import { referenceAssets, supportsReferences } from './components/ReferencePicker';
 import { resolveGpuCheckRequest } from './lib/colab-check';
+import { isAccountBudgetMissing, parseOAuthReturnLocation, resolveDefaultProvider } from './lib/colab-studio';
 import { jobStateLabel } from './lib/job-stage-rows';
 import { jobDetailTimings, paramRows, stageSecondsTotal, taskStatusNote } from './lib/job-detail-copy';
 import { resolveInstanceSubmission } from './lib/instance-submission';
@@ -30,9 +28,9 @@ import { formatInstanceTime } from './lib/instance-time';
 import { JobHistoryDetails } from './components/JobHistoryDetails';
 import styles from './gpu.module.css';
 
-const tabs = ['创作', '任务', '作品', '算力'] as const;
+const tabs = ['创作', '作品', '任务', '算力'] as const;
 type Tab = typeof tabs[number] | '设置';
-const tabIcons = { 创作: Sparkles, 任务: Zap, 作品: ImageIcon, 算力: Cpu, 设置: SettingsIcon } as const;
+const tabIcons = { 创作: Sparkles, 作品: ImageIcon, 任务: Zap, 算力: Cpu, 设置: SettingsIcon } as const;
 const terminalStates = new Set(['completed', 'succeeded', 'failed', 'failed_final', 'cancelled', 'cancelled_local', 'blocked']);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -215,8 +213,15 @@ function NewProjectDialog({
 }
 
 export default function App() {
+  const oauthReturnRef = useRef(
+    typeof window !== 'undefined'
+      ? parseOAuthReturnLocation(window.location.search, window.location.pathname, window.location.hash)
+      : { justConnected: false, cleanUrl: '/' },
+  );
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
-  const [tab, setTab] = useState<Tab>(() => new URLSearchParams(window.location.search).get('google') === 'connected' ? '设置' : '创作');
+  const [tab, setTab] = useState<Tab>(oauthReturnRef.current.justConnected ? '设置' : '创作');
+  const [settingsInitialView, setSettingsInitialView] = useState<'main' | 'workflows'>('main');
+  const [oauthJustConnected, setOauthJustConnected] = useState(oauthReturnRef.current.justConnected);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [showProjectSheet, setShowProjectSheet] = useState(false);
@@ -236,7 +241,8 @@ export default function App() {
   const [jobs, setJobs] = useState<GpuJob[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<string[]>([]);
   const [runtime, setRuntime] = useState<Provider>('mock');
-  const [maxRuntime, setMaxRuntime] = useState(30);
+  const userSelectedRuntime = useRef(false);
+  const [requestedRuntime, setMaxRuntime] = useState<number | null>(null);
   const [batchCount,setBatchCount] = useState(1);
   const [batchMode,setBatchMode] = useState<'save'|'smart'|'batch'|'retain'>('save');
   const [runtimeChoice, setRuntimeChoice] = useState<RuntimeChoice>({ accountId: '', instanceId: '', lifecycle: 'save', retainIdleMinutes: 15 });
@@ -245,6 +251,7 @@ export default function App() {
   const [resourceError, setResourceError] = useState('');
   const resourceRefresh = useRef<(() => void) | null>(null);
   const submitting = useRef(false);
+  const [lastSubmittedJobId, setLastSubmittedJobId] = useState<string | null>(null);
   const [settings, setSettings] = useState<GpuSettings | null>(null);
   const [usage, setUsage] = useState<GpuUsage | null>(null);
   const [specs, setSpecs] = useState<ComputeSpec[]>([]);
@@ -253,7 +260,8 @@ export default function App() {
   const [jobError, setJobError] = useState('');
   const [loading, setLoading] = useState('');
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
-  const [confirm, setConfirm] = useState<'submit' | 'stop' | null>(null);
+  const [confirm, setConfirm] = useState<'stop' | null>(null);
+  const [stopTarget, setStopTarget] = useState<GpuInstance | null>(null);
   const [detail, setDetail] = useState<GpuJob | null>(null);
   const [detailError, setDetailError] = useState('');
   const [viewer, setViewer] = useState<GalleryAsset | null>(null);
@@ -263,6 +271,7 @@ export default function App() {
   const idempotencyKey = useRef('');
   const retryKeys = useRef<Record<string, string>>({});
   const instanceRetentionKeys = useRef<Record<string, string>>({});
+  const quickEnableKeys = useRef<Record<string, string>>({});
   const jobSequence = useRef(0);
   const draftReady = useRef('');
   const paramsRef = useRef(params);
@@ -272,16 +281,67 @@ export default function App() {
   const incomingDraft = useRef<Record<string, unknown> | null>(null);
   const draftLocation = useRef({ projectId: '', workflowId: '' });
 
+  function selectRuntime(next: Provider) {
+    userSelectedRuntime.current = true;
+    setRuntime(next);
+  }
+
   const activeProject = projects.find((p) => p.id === projectId);
   const activeWorkflow = workflows.find((item) => item.id === workflowId);
+  const configuredRuntimeCap = settings?.budget?.max_runtime_minutes;
+  const runtimeCap = typeof configuredRuntimeCap === 'number' ? Math.min(configuredRuntimeCap, 1440) : 30;
+  const maxRuntime = requestedRuntime ?? Math.min(30, runtimeCap);
+  const runtimeError = runtime === 'colab' && (!Number.isInteger(maxRuntime) || maxRuntime < 1 || maxRuntime > runtimeCap)
+    ? `请输入 1 到 ${runtimeCap} 分钟，实际运行受服务器上限约束。` : '';
+  const previousTimeout = runtime === 'colab' && activeWorkflow && jobs.find((job) => {
+    if (job.error_code !== 'gpu_timeout' || job.provider !== 'colab' || job.prep
+      || job.workflow_key !== activeWorkflow.workflow_key
+      || String(job.workflow_version) !== String(activeWorkflow.workflow_version)) return false;
+    const previous = job.resolved_params || job.params;
+    return previous && ['mode', 'length', 'width', 'height'].every((key) => previous[key] === params[key]);
+  });
+  const timedOutAt = previousTimeout ? previousTimeout.max_runtime_minutes : null;
+  const timeoutRisk = timedOutAt && maxRuntime <= timedOutAt
+    ? `相同模式和尺寸曾在 ${timedOutAt} 分钟上限内超时。可缩短视频、改用较少步数，或在运行设置中调高时限。` : '';
 
   const activeJobsCount = useMemo(() => {
     return jobs.filter((j) => !terminalStates.has(String(j.state || '').toLowerCase())).length;
   }, [jobs]);
 
+  const enrichedJobs = useMemo(() => jobs.map((job) => {
+    const instance = instances.find((item) => instanceIdOf(item) === job.instance_id);
+    return instance ? { ...job, instance_state: instance.state, runtime_deleted: instance.state === 'deleted' } : job;
+  }), [jobs, instances]);
+
+  const completedOutputsSignature = useMemo(() => jobs
+    .filter((job) => ['completed', 'succeeded'].includes(String(job.state || '').toLowerCase()))
+    .map((job) => `${job.id}:${(job.output_asset_ids || []).join(',')}`)
+    .join('|'), [jobs]);
+
+  const hasUsableColab = useMemo(
+    () => resolveDefaultProvider(settings, accounts, null) === 'colab',
+    [settings, accounts],
+  );
+
+  useEffect(() => {
+    if (!oauthReturnRef.current.justConnected || typeof window === 'undefined') return;
+    window.history.replaceState(null, '', oauthReturnRef.current.cleanUrl);
+  }, []);
+
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [tab]);
+
+  useEffect(() => {
+    if (!settings) return;
+    if (settings.offline_mode || settings.real_enabled === false) {
+      setRuntime('mock');
+      return;
+    }
+    if (!userSelectedRuntime.current && resolveDefaultProvider(settings, accounts, runtimeChoice.accountId) === 'colab') {
+      setRuntime('colab');
+    }
+  }, [settings, accounts, runtimeChoice.accountId]);
 
   useEffect(() => {
     const expire = () => setLoggedIn(false);
@@ -474,7 +534,14 @@ export default function App() {
     let alive = true;
     getGpuGallery(projectId).then((next) => alive && setGallery(next)).catch((cause) => alive && setError(`作品：${apiMessage(cause)}`));
     return () => { alive = false; };
-  }, [projectId, loggedIn, tab]);
+  }, [projectId, loggedIn, tab, completedOutputsSignature]);
+
+  useEffect(() => {
+    if (!loggedIn || (!completedOutputsSignature && tab !== '算力')) return;
+    let alive = true;
+    getGpuUsage().then((next) => alive && setUsage(next)).catch(() => undefined);
+    return () => { alive = false; };
+  }, [loggedIn, tab, completedOutputsSignature]);
 
   useEffect(() => {
     if (againJob && (againJob.resolved_params || againJob.params)) {
@@ -543,6 +610,10 @@ export default function App() {
 
   async function submitJob() {
     if (submitting.current || !projectId || !modelId || !workflowId || !activeWorkflow) return;
+    if (runtimeError) {
+      setError(runtimeError);
+      return;
+    }
     submitting.current = true;
     if (!idempotencyKey.current) idempotencyKey.current = keyId();
     setLoading('submit');
@@ -566,7 +637,7 @@ export default function App() {
           : [],
         execution_policy: {
           provider: runtime,
-          max_runtime_minutes: maxRuntime,
+          max_runtime_minutes: runtime === 'colab' ? maxRuntime : Math.min(30, runtimeCap),
           allocation: decision.allocation,
           gpu_selection: runtimeChoice.gpuSelection || 'workflow',
           account_id: decision.accountId,
@@ -581,20 +652,21 @@ export default function App() {
           params:{...body.params,...(typeof body.params.seed === 'number' && body.params.seed >= 0 ? {seed:body.params.seed+index} : {})}})),
           runtimeChoice.lifecycle, runtimeChoice.retainIdleMinutes * 60, idempotencyKey.current);
       } else {
-        await createGpuJob(body, idempotencyKey.current);
+        const created = await createGpuJob(body, idempotencyKey.current);
+        if (created?.id) setLastSubmittedJobId(created.id);
       }
       setConfirm(null);
-      setTab('任务');
       idempotencyKey.current = '';
       await refreshJobs();
+      resourceRefresh.current?.();
     } catch (cause) {
       const code = cause instanceof ApiError ? cause.code : '';
       if (code === 'INSTANCE_UNAVAILABLE' || code === 'INSTANCE_NOT_FOUND') {
         const decision = resolveInstanceSubmission(runtimeChoice, instances);
         setRuntimeChoice({ ...runtimeChoice, accountId: decision.accountId || runtimeChoice.accountId, instanceId: null });
-        setError('所选 GPU 机器已释放或不能复用。这次没有提交任务，也没有换账号。请再点一次确认，改为自动分配，或另选一台可用机器。');
+        setError('所选 GPU 机器已释放或不能复用。这次没有提交任务，也没有换账号。请再点一次立即生成，改为自动分配，或另选一台可用机器。');
       } else if (code === 'NETWORK_TIMEOUT') {
-        setError(`提交任务：${apiMessage(cause)}。网络中断时请先到「任务」页确认是否已经提交，不要连续改参数重试。`);
+        setError(`提交任务：${apiMessage(cause)}。网络中断时请先查看「任务」记录确认是否已经提交，不要连续改参数重试。`);
       } else {
         setError(`提交任务：${apiMessage(cause)}。这次没有确认任务已创建。`);
       }
@@ -730,7 +802,7 @@ export default function App() {
     const id = instanceIdOf(instance);
     if (!id) return;
     changeRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes });
-    setRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
+    selectRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
     setTab('算力');
   }
 
@@ -738,13 +810,11 @@ export default function App() {
     const id = instanceIdOf(instance);
     if (!id) return;
     changeRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: 'save', retainIdleMinutes: runtimeChoice.retainIdleMinutes });
-    setRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
+    selectRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
     setTab('创作');
   }
 
-  async function retainJob(job: GpuJob) {
-    const instanceId = String(job.instance_id || '');
-    if (!instanceId) { setJobError('该任务尚未分配实例，暂不能保留。'); return; }
+  async function retainInstanceById(instanceId: string) {
     await action('retain', async () => {
       const operation = `retain:${instanceId}`;
       const writeKey = instanceRetentionKeys.current[operation] ||= `retain:${instanceId}:${keyId()}`;
@@ -768,6 +838,62 @@ export default function App() {
     });
   }
 
+  async function retainJob(job: GpuJob) {
+    const instanceId = String(job.instance_id || '');
+    if (!instanceId) { setJobError('该任务尚未分配实例，暂不能保留。'); return; }
+    await retainInstanceById(instanceId);
+  }
+
+  async function retainInstance(instance: GpuInstance) {
+    const id = instanceIdOf(instance);
+    if (!id) return;
+    await retainInstanceById(id);
+  }
+
+  async function quickEnableAccount(account: GpuAccount) {
+    const dailyCap = Number(usage?.daily_limit || settings?.budget?.daily_units || 0) || 100;
+    const patch: Record<string, unknown> = { allow_allocation: true };
+    if (isAccountBudgetMissing(account)) {
+      patch.budget = { daily: dailyCap, daily_units: dailyCap };
+    }
+    const key = quickEnableKeys.current[account.account_id] ||= `enable-${account.account_id}-${keyId()}`;
+    await action('enable-account', async () => {
+      const updated = await updateGoogleAccount(account.account_id, patch, key) as unknown as GpuAccount;
+      delete quickEnableKeys.current[account.account_id];
+      setAccounts((current) => current.map((item) => (
+        item.account_id === account.account_id ? { ...item, ...updated } : item
+      )));
+      selectRuntime('colab');
+    });
+  }
+
+  function retryJobById(id: string) {
+    const job = jobs.find((item) => item.id === id);
+    if (job?.provider === 'colab' && job.error_code === 'gpu_timeout' && !job.prep && (job.resolved_params || job.params)) {
+      const workflow = workflows.find((item) => item.workflow_key === job.workflow_key
+        && String(item.workflow_version) === String(job.workflow_version));
+      if (!workflow) {
+        setJobError('这次任务的工作流版本已不可用。请在创作页选择当前版本。');
+        return;
+      }
+      selectRuntime('colab');
+      setMaxRuntime(Math.min(job.max_runtime_minutes ?? maxRuntime, runtimeCap));
+      setRuntimeChoice((current) => current.instanceId === job.instance_id
+        ? { ...current, instanceId: null } : current);
+      setError('上次运行超时。已带回生成参数，请调整时限或生成参数后再提交。');
+      setAgainJob(job);
+      return;
+    }
+    void action('retry', async () => {
+      const key = retryKeys.current[id] || `attempt:${id}:${keyId()}`;
+      retryKeys.current[id] = key;
+      if (job?.provider === 'mock') await retryGpuAttempt(id, key);
+      else await retryGpuJob(id, key);
+      delete retryKeys.current[id];
+      await refreshJobs();
+    });
+  }
+
   async function archiveJob(job: GpuJob, archived: boolean) {
     const updated = await setGpuJobArchived(job.id, archived);
     setJobs((current) => current.map((item) => item.id === job.id ? { ...item, ...updated, archived_at: updated.archived_at || null } : item));
@@ -787,11 +913,28 @@ export default function App() {
     await refreshJobs();
   }
 
+  async function confirmStopInstance() {
+    const target = stopTarget;
+    const id = target ? instanceIdOf(target) : '';
+    if (!id) return;
+    await action('stop-instance', async () => {
+      const operation = `stop:${id}`;
+      const key = instanceRetentionKeys.current[operation] ||= `stop:${id}:${keyId()}`;
+      await stopInstance(id, key);
+      delete instanceRetentionKeys.current[operation];
+      setStopTarget(null);
+      const nextInstances = await listGpuInstances() as unknown as GpuInstance[];
+      setInstances(uniqueBy(nextInstances, instanceIdOf));
+      await refreshJobs();
+    });
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         if (viewer) setViewer(null);
         else if (detail) setDetail(null);
+        else if (stopTarget) setStopTarget(null);
         else if (confirm) setConfirm(null);
         else if (showNewProject) setShowNewProject(false);
         else if (showProjectSheet) setShowProjectSheet(false);
@@ -799,7 +942,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [viewer, detail, confirm, showProjectSheet, showNewProject]);
+  }, [viewer, detail, stopTarget, confirm, showProjectSheet, showNewProject]);
 
   if (!loggedIn) {
     return <Login onLoggedIn={() => { setLoggedIn(true); setLoginRefresh((c) => c + 1); }} />;
@@ -812,10 +955,35 @@ export default function App() {
           <span className="brandMark"><Triangle size={16} strokeWidth={1.6} aria-hidden /></span>
           <span className="brandText">
             <strong>Colab GPU Studio</strong>
-            <small>{settings?.offline_mode ? '离线演示' : '个人创作工作台'}</small>
+            <small>{settings?.offline_mode ? '离线演示' : 'Colab 个人创作台'}</small>
           </span>
         </div>
         <div className="topbarActions">
+          <ColabRuntimeBar
+            runtime={runtime}
+            onRuntimeChange={selectRuntime}
+            settings={settings}
+            usage={usage}
+            accounts={accounts}
+            onAccountsChange={setAccounts}
+            instances={instances}
+            runtimeChoice={runtimeChoice}
+            onRuntimeChoiceChange={changeRuntimeChoice}
+            maxRuntime={maxRuntime}
+            onMaxRuntimeChange={setMaxRuntime}
+            runtimeCap={runtimeCap}
+            runtimeError={runtimeError}
+            activeJobsCount={activeJobsCount}
+            specs={specs}
+            specsNote={specsNote}
+            loadingCheck={loading === 'check'}
+            onCheckGpu={() => void checkGpu()}
+            onRetainInstance={(instance) => void retainInstance(instance)}
+            onStopInstance={(instance) => setStopTarget(instance)}
+            onEmergencyStop={() => setConfirm('stop')}
+            onOpenCompute={() => setTab('算力')}
+            onOpenSettings={() => { setSettingsInitialView('main'); setTab('设置'); }}
+          />
           <button className="projectChip" type="button" aria-label="切换项目" onClick={() => setShowProjectSheet(true)}>
             <Folder size={15} strokeWidth={1.6} aria-hidden />
             <span>{activeProject ? projectOptionLabel(activeProject, projects) : '选择项目'}</span>
@@ -824,7 +992,7 @@ export default function App() {
           <button className="iconButton" type="button" aria-label="新建项目" title="新建项目" onClick={() => setShowNewProject(true)}>
             <Plus size={18} strokeWidth={1.6} aria-hidden />
           </button>
-          <button className="iconButton mobileSettings" aria-label="打开设置" onClick={() => setTab('设置')}>
+          <button className="iconButton mobileSettings" aria-label="打开设置" onClick={() => { setSettingsInitialView('main'); setTab('设置'); }}>
             <SettingsIcon size={18} strokeWidth={1.6} aria-hidden />
           </button>
         </div>
@@ -836,7 +1004,11 @@ export default function App() {
           return (
             <button key={item} type="button" className={item === '设置' ? 'desktopSettings' : undefined}
               aria-label={item === '设置' ? '打开设置' : undefined}
-              aria-current={tab === item ? 'page' : undefined} onClick={() => setTab(item)}>
+              aria-current={tab === item ? 'page' : undefined}
+              onClick={() => {
+                if (item === '设置') setSettingsInitialView('main');
+                setTab(item);
+              }}>
               <Icon size={21} strokeWidth={1.5} aria-hidden />
               <span>{item}</span>
               {item === '任务' && activeJobsCount > 0 && <span className="tabBadge">{activeJobsCount}</span>}
@@ -868,6 +1040,9 @@ export default function App() {
             params={params}
             setParams={setParams}
             gallery={referenceImages}
+            outputs={gallery}
+            jobs={enrichedJobs}
+            highlightedJobId={lastSubmittedJobId}
             selectedAssets={selectedAssets}
             setSelectedAssets={setSelectedAssets}
             uploadProgress={uploadProgress}
@@ -877,9 +1052,12 @@ export default function App() {
             workflowId={workflowId}
             setWorkflowId={setWorkflowId}
             runtime={runtime}
-            setRuntime={setRuntime}
+            setRuntime={selectRuntime}
             maxRuntime={maxRuntime}
             setMaxRuntime={setMaxRuntime}
+            runtimeCap={runtimeCap}
+            runtimeError={runtimeError}
+            timeoutRisk={timeoutRisk}
             batchCount={batchCount}
             setBatchCount={setBatchCount}
             batchMode={batchMode}
@@ -890,31 +1068,32 @@ export default function App() {
             onRuntimeChoiceChange={changeRuntimeChoice}
             loading={loading}
             error={error}
-            onSubmit={() => setConfirm('submit')}
+            onSubmit={() => void submitJob()}
             onApplyPreset={applyPreset}
             onSavePreset={(name) => void savePreset(name)}
+            onOpenAsset={setViewer}
+            onFavoriteAsset={(asset) => void favorite(asset)}
+            onReuseAsset={(asset) => void reuseAsset(asset)}
+            onOpenJobDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
+            onCancelJob={(id) => void action('cancel', async () => { await cancelGpuJob(id); await refreshJobs(); })}
+            onRetryJob={retryJobById}
+            onRetainJob={(job) => void retainJob(job)}
+            onOpenGallery={() => setTab('作品')}
+            onOpenJobs={() => setTab('任务')}
+            onOpenSettings={() => { setSettingsInitialView('main'); setTab('设置'); }}
+            onOpenWorkflows={() => { setSettingsInitialView('workflows'); setTab('设置'); }}
+            onQuickEnableAccount={(account) => void quickEnableAccount(account)}
           />
         )}
 
         {tab === '任务' && (
           <TasksPanel
-            jobs={jobs.map((job) => {
-              const instance = instances.find((item) => instanceIdOf(item) === job.instance_id);
-              return instance ? { ...job, instance_state: instance.state, runtime_deleted: instance.state === 'deleted' } : job;
-            })}
+            jobs={enrichedJobs}
             error={jobError}
             refreshing={refreshingJobs}
             onRefresh={() => void refreshJobs()}
             onCancel={(id) => void action('cancel', async () => { await cancelGpuJob(id); await refreshJobs(); })}
-            onRetry={(id) => void action('retry', async () => {
-              const job = jobs.find((item) => item.id === id);
-              const key = retryKeys.current[id] || `attempt:${id}:${keyId()}`;
-              retryKeys.current[id] = key;
-              if (job?.provider === 'mock') await retryGpuAttempt(id, key);
-              else await retryGpuJob(id, key);
-              delete retryKeys.current[id];
-              await refreshJobs();
-            })}
+            onRetry={retryJobById}
             onDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
             onRetain={(job) => void retainJob(job)}
             onArchive={archiveJob}
@@ -948,32 +1127,21 @@ export default function App() {
             loadingCheck={loading === 'check'}
             specs={specs}
             specsNote={specsNote}
-            error={error}
+            error={error || resourceError}
           />
         )}
         {tab === '设置' && (
           <SettingsPanel
             accounts={accounts}
             onAccountsChange={setAccounts}
-            instances={instances}
-            onRefreshInstances={() => resourceRefresh.current?.()}
             settings={settings}
-            usage={usage}
-            specs={specs}
-            specsNote={specsNote}
             workflows={workflows}
-            loading={loading}
             error={error}
-            onConnect={(purpose) => void action('connect', async () => {
-              const url = await startGoogleAuth(purpose);
-              if (url) window.location.href = url;
-            })}
-            onDisconnect={(purpose) => void action('disconnect', async () => {
-              await disconnectGoogle(purpose);
-              setSettings(await getGpuSettings());
-            })}
-            onCheck={() => void checkGpu()}
-            onStop={() => setConfirm('stop')}
+            initialView={settingsInitialView}
+            oauthJustConnected={oauthJustConnected}
+            hasUsableColab={hasUsableColab}
+            onGoCreate={() => { setOauthJustConnected(false); setTab('创作'); }}
+            onOpenCompute={() => setTab('算力')}
             onImport={(bundle) => void importWorkflow(bundle)}
             onValidate={(wf) => void action('validate', async () => {
               await validateGpuWorkflow(wf.id);
@@ -1009,30 +1177,24 @@ export default function App() {
         )}
       </main>
 
-      {/* 确认生成弹窗 */}
-      {confirm === 'submit' && activeWorkflow && (
-        <div className={styles.dialogBackdrop} role="presentation" onClick={() => setConfirm(null)}>
+      {/* 确认释放单台实例 */}
+      {stopTarget && (
+        <div className={styles.dialogBackdrop} role="presentation" onClick={() => setStopTarget(null)}>
           <section
             className={styles.dialog}
             role="dialog"
             aria-modal="true"
-            aria-label="确认提交任务"
+            aria-label="确认释放实例"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2>确认开始生成</h2>
-            <dl className={styles.kv}>
-              <dt>工作流</dt><dd>{activeWorkflow.workflow_key} · v{activeWorkflow.workflow_version}</dd>
-              <dt>运行方式</dt><dd>{runtime === 'colab' ? 'Colab GPU（会扣 CU）' : '离线模拟（不扣 CU）'}</dd>
-              <dt>机器</dt><dd>{resolveInstanceSubmission(runtimeChoice, instances).machineLabel}</dd>
-              {runtime === 'colab' && !runtimeChoice.instanceId && <><dt>GPU 配置</dt><dd>{runtimeChoice.gpuSelection === 'auto' ? '不指定，按机器列表自动尝试' : '工作流默认配置'}</dd></>}
-              <dt>数量</dt><dd>{batchCount}</dd>
-              {runtime === 'colab' && <><dt>最长运行</dt><dd>{maxRuntime} 分钟</dd></>}
-            </dl>
-            {error && <p className="status error" role="alert">{error}</p>}
+            <h2>释放这台 Colab 机器？</h2>
+            <p className="muted">
+              将向 Google Colab 请求释放实例「{stopTarget.instance_label || stopTarget.label || instanceIdOf(stopTarget).slice(0, 8)}」，该机器上未完成的任务会被终止，后续生成需要重新开机恢复模型。
+            </p>
             <div className="actions">
-              <button className="button secondary" type="button" onClick={() => setConfirm(null)}>取消</button>
-              <button className="button" disabled={loading === 'submit'} type="button" onClick={() => void submitJob()}>
-                {loading === 'submit' ? '提交中…' : '确认启动'}
+              <button className="button secondary" type="button" disabled={loading === 'stop-instance'} onClick={() => setStopTarget(null)}>取消</button>
+              <button className="button danger" type="button" disabled={loading === 'stop-instance'} onClick={() => void confirmStopInstance()}>
+                {loading === 'stop-instance' ? '释放中…' : '确认释放'}
               </button>
             </div>
           </section>

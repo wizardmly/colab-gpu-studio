@@ -49,6 +49,7 @@ export function GalleryPanel({
         <h2><ImageIcon size={20} strokeWidth={1.6} aria-hidden />作品<span className="pill">{gallery.length} 件作品</span></h2>
       </div>
 
+      <div className={styles.browseToolbar}>
       <label className={styles.searchBox}>
         <Search size={17} strokeWidth={1.6} aria-hidden />
         <input aria-label="搜索作品" placeholder="搜索作品（文件名、任务编号）" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(24); }} />
@@ -59,6 +60,7 @@ export function GalleryPanel({
         {chip('image', '图片')}
         {chip('video', '视频')}
         {chip('favorite', '收藏', <Star size={13} strokeWidth={1.8} aria-hidden />)}
+      </div>
       </div>
 
       {filtered.length ? (

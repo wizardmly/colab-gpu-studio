@@ -170,7 +170,11 @@ export function CreatePanel({
   }
 
   return (
-    <div className={styles.stack}>
+    <div className={`${styles.stack} ${styles.createWorkspace}`}>
+      <header className={styles.createHeading}>
+        <h2><Sparkles size={20} strokeWidth={1.6} aria-hidden />创作</h2>
+      </header>
+      <div className={styles.createSetup}>
       {/* 1 创作类型 */}
       <Card icon={<Sparkles size={17} strokeWidth={1.6} aria-hidden />} title="创作类型">
         <Segmented<Category>
@@ -223,8 +227,10 @@ export function CreatePanel({
         </details>
       </Card>
 
+      </div>
+      <div className={styles.createContent}>
       {/* 3 提示词 */}
-      <Card icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />} title="提示词">
+      <Card className={styles.promptCard} icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />} title="提示词">
         <textarea
           aria-label="提示词"
           value={promptValue}
@@ -234,6 +240,16 @@ export function CreatePanel({
         />
       </Card>
 
+      {/* 参考素材 */}
+      {manifest && (split.assets.length > 0 || supportsReferences(manifest)) && (
+        <Card className={styles.referenceCard} icon={<ImageIcon size={17} strokeWidth={1.6} aria-hidden />} title="参考素材">
+          <GpuParamForm section="assets" manifest={manifest} values={params} assets={gallery} uploadProgress={uploadProgress}
+            onChange={(k, v) => setParams({ ...params, [k]: v })} onUpload={onUpload} excludeKeys={excluded} />
+          <ReferencePicker manifest={manifest} assets={gallery} selected={selectedAssets} onChange={setSelectedAssets} onUpload={onUpload} />
+        </Card>
+      )}
+      </div>
+      <div className={styles.createControls}>
       {/* 4 画面尺寸 —— 全页只有这一套尺寸选择 */}
       {hasSize && (
         <Card
@@ -291,15 +307,6 @@ export function CreatePanel({
         </Card>
       )}
 
-      {/* 6 素材 */}
-      {manifest && (split.assets.length > 0 || supportsReferences(manifest)) && (
-        <Card icon={<ImageIcon size={17} strokeWidth={1.6} aria-hidden />} title="参考素材">
-          <GpuParamForm section="assets" manifest={manifest} values={params} assets={gallery} uploadProgress={uploadProgress}
-            onChange={(k, v) => setParams({ ...params, [k]: v })} onUpload={onUpload} excludeKeys={excluded} />
-          <ReferencePicker manifest={manifest} assets={gallery} selected={selectedAssets} onChange={setSelectedAssets} onUpload={onUpload} />
-        </Card>
-      )}
-
       {/* 7 数量 */}
       <Card>
         <div className={styles.countRow}>
@@ -331,6 +338,7 @@ export function CreatePanel({
       )}
 
       {/* 9 运行设置 */}
+      <div id="create-runtime" className={styles.createRuntime} tabIndex={-1}>
       <Card
         icon={<Play size={17} strokeWidth={1.6} aria-hidden />}
         title="运行设置"
@@ -358,11 +366,16 @@ export function CreatePanel({
         <p className="muted small">
           {runtime === 'mock' ? RUNTIME_HELP.mock : `${RUNTIME_HELP.colab}今日限额 ${shown(settings?.budget?.daily_units)} CU。`}
         </p>
-        <button className="button big" disabled={!workflowId || loading === 'submit'} type="button" onClick={onSubmit}>
-          <Sparkles size={18} strokeWidth={1.8} aria-hidden />{loading === 'submit' ? '提交中…' : '立即生成'}
-        </button>
         {error && <p className="status error" role="alert">{error}</p>}
       </Card>
+      </div>
+      <div className={styles.createSubmit}>
+        <a className={`button secondary ${styles.runtimeJump}`} href="#create-runtime">运行设置</a>
+        <button className="button big block" disabled={!workflowId || loading === 'submit'} type="button" onClick={onSubmit}>
+          <Sparkles size={18} strokeWidth={1.8} aria-hidden />{loading === 'submit' ? '提交中…' : '立即生成'}
+        </button>
+      </div>
+      </div>
 
       {/* 工作流选择面板 */}
       {pickerOpen && (

@@ -2,6 +2,10 @@
 
 .page { width: 100%; padding: 14px 16px 0; flex: 1; }
 .stack { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.createHeading { display: none; }
+.createSetup, .createContent, .createControls { display: contents; }
+.createSubmit .runtimeJump { display: none; }
+.managementLayout, .browseToolbar { display: grid; gap: 12px; min-width: 0; }
 
 /* ───── 卡片 ───── */
 .card {
@@ -185,6 +189,7 @@
 .banner { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--card); text-align: left; font-size: 0.86rem; }
 .banner span { flex: 1; }
 .list { display: grid; gap: 10px; }
+.jobList { display: grid; gap: 10px; }
 
 /* 任务卡 */
 .jobCard { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); }
@@ -200,7 +205,9 @@
 .progress span { display: block; height: 100%; border-radius: 2px; background: var(--primary); transition: width 0.3s; }
 .progress[data-indeterminate="true"] span { width: 35%; animation: slide 1.3s ease-in-out infinite; }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
-.cardActions { display: flex; gap: 8px; }
+.cardActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cardActions .jobMainAction { flex: 1; }
+.jobMachine { padding-inline-start: 0; text-align: left; overflow-wrap: anywhere; }
 
 /* ───── 作品 ───── */
 .galleryGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -264,6 +271,99 @@
 .navRow > span { display: grid; flex: 1; line-height: 1.35; }
 .navRow strong { font-size: 0.95rem; font-weight: 600; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; }
+
+@media (min-width: 1024px) {
+  .page {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    max-width: 1720px;
+    margin-inline: auto;
+    padding: 26px clamp(22px, 3vw, 44px) 64px;
+  }
+  .page > .stack { gap: 18px; }
+  .pageTitle h2, .pageHead h2, .subHead h2, .createHeading h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.4rem;
+    line-height: 1.25;
+  }
+  .subHead h2 { margin: 0; padding: 0; }
+  .createHeading { display: block; grid-column: 1 / -1; }
+  .createWorkspace {
+    grid-template-columns: minmax(0, 1fr) minmax(330px, 0.65fr);
+    align-items: start;
+  }
+  .createSetup, .createContent, .createControls {
+    display: grid;
+    min-width: 0;
+    gap: 14px;
+    align-content: start;
+  }
+  .createSetup { grid-column: 1 / -1; grid-template-columns: minmax(236px, 0.38fr) minmax(0, 1fr); }
+  .createSetup .card { align-content: start; }
+  .createControls { align-self: stretch; }
+  .createRuntime { scroll-margin-top: calc(var(--workspace-header) + 16px); }
+  .createSubmit {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+    position: sticky;
+    bottom: 14px;
+    z-index: 5;
+    padding: 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-md);
+    background: var(--card);
+    box-shadow: 0 8px 24px var(--overlay);
+  }
+  .createSubmit .runtimeJump { display: inline-flex; white-space: nowrap; }
+  .createWorkspace .card { padding: 16px; }
+  .promptCard textarea { min-height: 148px; }
+  .referenceCard > .paramList { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .refGrid { grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); }
+  .ratioChip { min-height: 64px; }
+  .browseToolbar {
+    grid-template-columns: minmax(220px, 340px) minmax(0, 1fr);
+    align-items: center;
+  }
+  .browseToolbar .filterBar { justify-content: flex-start; }
+  .searchBox input { min-width: 0; }
+  .chip:hover:not([data-active="true"]), .linkButton:hover { color: var(--text); }
+  .jobList { gap: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card); }
+  .jobList .jobCard {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px;
+    align-items: center;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 14px 16px;
+  }
+  .jobList .jobCard + .jobCard { border-top: 1px solid var(--line); }
+  .jobTop { grid-area: 1 / 1; align-items: center; }
+  .jobThumb { width: 48px; height: 48px; }
+  .jobTitleRow { justify-content: flex-start; align-items: center; }
+  .jobList .cardActions { grid-area: 1 / 2; flex-wrap: wrap; max-width: 320px; justify-content: flex-end; }
+  .jobList .cardActions > button { flex: 0 0 auto; }
+  .jobList .progressBlock, .jobError { grid-column: 1 / -1; }
+  .galleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+  .tileMedia { aspect-ratio: 4 / 3; }
+  .tileMeta { padding: 10px 12px; }
+  .floatBar { bottom: 24px; left: auto; right: 28px; transform: none; }
+  .managementLayout { grid-template-columns: minmax(0, 1fr) minmax(314px, 0.66fr); gap: 18px; align-items: start; }
+  .detailDialog { width: min(880px, calc(100vw - 64px)); max-width: none; padding: 22px; }
+  .viewerDialog { width: min(1120px, calc(100vw - 64px)); max-width: none; padding: 22px; }
+  .viewerImage, .viewerVideo { max-height: 70dvh; }
+}
+
+@media (min-width: 1360px) {
+  .createWorkspace { grid-template-columns: minmax(0, 1fr) minmax(400px, 0.63fr); }
+  .ratioGrid { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+  .galleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 236px), 1fr)); }
+}
 
 /* 工作流版本分组 */
 .wfGroup { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card); overflow: hidden; }

@@ -41,9 +41,25 @@ export function ComputePage({
     <div className={styles.stack}>
       <div className={styles.pageHead}>
         <h2><Cpu size={20} strokeWidth={1.6} aria-hidden />算力</h2>
-        <p className="muted small">任务在后台运行，关掉手机也不会中断，回来再看就行。</p>
       </div>
 
+      <div className={styles.managementLayout}>
+      <div className={styles.stack}>
+      <InstanceCenter instances={instances} onContinue={onContinue} onOpenWorkbench={onOpenWorkbench} onRefresh={onRefreshInstances} />
+      <div className={styles.twoButtons}>
+        <button className="button" style={{ flex: 1 }} disabled={loadingCheck} type="button" onClick={onCheck}>
+          <Search size={16} strokeWidth={1.8} aria-hidden />{loadingCheck ? '检查中…' : '检查可用 GPU'}
+        </button>
+        <button className="button danger" style={{ flex: 1 }} disabled={loadingStop} type="button" onClick={onStop}>
+          <Square size={14} strokeWidth={1.8} aria-hidden />{loadingStop ? '停止中…' : '停止全部任务'}
+        </button>
+      </div>
+      {specsNote && <p className="muted small" role="status">{specsNote}</p>}
+      {specs.length > 0 && <ComputeSpecs specs={specs} />}
+      {error && <p className="status error" role="alert">{error}</p>}
+      </div>
+
+      <div className={styles.stack}>
       <Card icon={<Monitor size={17} strokeWidth={1.6} aria-hidden />} title="当前环境" aside={<span className={`pill ${realEnabled ? 'solid' : ''}`}>{realEnabled ? '真实 GPU' : '模拟模式'}</span>}>
         <p className="muted small">{realEnabled ? '任务会在 Google Colab 的 GPU 上真实运行。' : '现在是本地模拟，不会连接 Colab，也不会扣 CU。'}</p>
         <div className={styles.triple}>
@@ -104,21 +120,9 @@ export function ComputePage({
         </div>
       </Card>
 
-      <InstanceCenter instances={instances} onContinue={onContinue} onOpenWorkbench={onOpenWorkbench} onRefresh={onRefreshInstances} />
-
       <div className={styles.note}><Info size={16} strokeWidth={1.6} aria-hidden /><span>{realEnabled ? '用量数据来自站内记录，可能与 Google 账单略有出入。' : '模拟模式的数据仅供演示，不代表真实账单。'}</span></div>
-
-      <div className={styles.twoButtons}>
-        <button className="button" style={{ flex: 1 }} disabled={loadingCheck} type="button" onClick={onCheck}>
-          <Search size={16} strokeWidth={1.8} aria-hidden />{loadingCheck ? '检查中…' : '检查可用 GPU'}
-        </button>
-        <button className="button danger" style={{ flex: 1 }} disabled={loadingStop} type="button" onClick={onStop}>
-          <Square size={14} strokeWidth={1.8} aria-hidden />{loadingStop ? '停止中…' : '停止全部任务'}
-        </button>
       </div>
-      {specsNote && <p className="muted small" role="status">{specsNote}</p>}
-      {specs.length > 0 && <ComputeSpecs specs={specs} />}
-      {error && <p className="status error" role="alert">{error}</p>}
+      </div>
     </div>
   );
 }

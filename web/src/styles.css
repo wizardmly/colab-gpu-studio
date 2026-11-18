@@ -1,5 +1,4 @@
-/* Colab GPU Studio — 黑白极简主题
-   纯黑底 / 深灰卡片 / 白色主按钮 / 发丝边框。移动优先，桌面端为居中窄栏。 */
+/* Colab GPU Studio — 黑白主题 */
 
 :root {
   --bg: #000000;
@@ -149,24 +148,88 @@ svg { flex: none; }
 }
 .iconButton:active { background: var(--card-2); }
 
-.bottomNav {
+.workspaceNav {
   position: fixed; z-index: 30; left: 50%; bottom: 0; transform: translateX(-50%);
   width: 100%; max-width: var(--col);
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
   padding: 6px 10px calc(6px + var(--safe-b));
   background: var(--bg); border-top: 1px solid var(--line);
 }
-.bottomNav button {
+.workspaceNav button {
   position: relative; display: grid; justify-items: center; gap: 3px;
   padding: 7px 0; border: 0; border-radius: var(--r-md);
   background: transparent; color: var(--muted); font-size: 0.72rem;
 }
-.bottomNav button[aria-current="page"] { color: var(--text); background: var(--card-2); }
+.workspaceNav button[aria-current="page"] { color: var(--text); background: var(--card-2); }
+.workspaceNav .desktopSettings { display: none; }
 .tabBadge {
   position: absolute; top: 2px; right: calc(50% - 22px);
   min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-full);
   background: var(--primary); color: var(--on-primary);
   font-size: 0.65rem; font-weight: 700; display: grid; place-items: center;
+}
+
+@media (min-width: 700px) and (max-width: 1023px) {
+  .app { max-width: 820px; }
+  .workspaceNav { max-width: 820px; }
+}
+
+@media (min-width: 1024px) {
+  .app {
+    --sidebar-width: 192px;
+    --workspace-header: 64px;
+    display: grid;
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+    grid-template-rows: var(--workspace-header) 1fr;
+    max-width: none;
+    padding-bottom: 0;
+  }
+  .topbar {
+    grid-column: 1 / -1;
+    padding: 0 26px;
+  }
+  .topbar .brand { gap: 10px; }
+  .topbar .brandMark { width: 36px; height: 36px; }
+  .topbar .brandText strong { font-size: 0.98rem; }
+  .topbarActions { gap: 8px; }
+  .projectChip { max-width: 320px; min-width: 152px; padding: 0 12px; gap: 10px; }
+  .projectChip span { flex: 1; text-align: left; }
+  .mobileSettings { display: none; }
+  .workspaceNav {
+    grid-column: 1;
+    grid-row: 2;
+    position: sticky;
+    align-self: start;
+    top: var(--workspace-header);
+    left: auto;
+    bottom: auto;
+    transform: none;
+    min-height: calc(100dvh - var(--workspace-header));
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 5px;
+    padding: 18px 12px;
+    border-top: 0;
+    border-right: 1px solid var(--line);
+  }
+  .workspaceNav button, .workspaceNav .desktopSettings {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    min-height: 43px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  .workspaceNav button:hover, .topbarActions button:hover { background: var(--card); }
+  .workspaceNav button[aria-current="page"] { background: var(--card-2); font-weight: 650; }
+  .workspaceNav button > svg { width: 18px; height: 18px; }
+  .workspaceNav .desktopSettings { margin-top: 10px; }
+  .tabBadge { position: static; margin-left: auto; }
+}
+
+@media (min-width: 1440px) {
+  .app { --sidebar-width: 216px; }
 }
 
 /* ───────── 通用控件 ───────── */

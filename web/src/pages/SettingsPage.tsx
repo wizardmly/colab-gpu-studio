@@ -75,21 +75,8 @@ export function SettingsPanel({
         <h2><Settings size={20} strokeWidth={1.6} aria-hidden />设置</h2>
       </div>
 
-      <Card icon={<Monitor size={17} strokeWidth={1.6} aria-hidden />} title="外观">
-        <ThemePicker />
-      </Card>
-
-      <Card icon={<Gauge size={17} strokeWidth={1.6} aria-hidden />} title="用量与额度" aside={<span className="pill">已用 {pct}%</span>}>
-        <div className={styles.grid2}>
-          <div className={styles.statBox}><small className="muted">运行中任务</small><strong>{activeCount}</strong></div>
-          <div className={styles.statBox}><small className="muted">每日上限</small><strong>{dailyCap || '—'}<em> CU</em></strong></div>
-          <div className={styles.statBox}><small className="muted">已用</small><strong>{cuNumber(used)}<em> CU</em></strong></div>
-          <div className={styles.statBox}><small className="muted">使用率</small><strong>{pct}%</strong></div>
-        </div>
-      </Card>
-
-      <InstanceCenter instances={instances} onRefresh={onRefreshInstances} />
-
+      <div className={styles.managementLayout}>
+      <div className={styles.stack}>
       <Card icon={<Plug size={17} strokeWidth={1.6} aria-hidden />} title="Google 账号" aside={settings?.offline_mode ? <span className="pill">离线模式</span> : undefined}>
         <AccountDirectory key={oauthConfigRevision} accounts={accounts} onAccountsChange={onAccountsChange} onSetupRequested={() => {
           if (oauthSetupRef.current) {
@@ -103,6 +90,22 @@ export function SettingsPanel({
             <div className="foldContent"><GoogleOAuthSetup onConfigured={() => setOauthConfigRevision((revision) => revision + 1)} /></div>
           </details>
         )}
+      </Card>
+      <InstanceCenter instances={instances} onRefresh={onRefreshInstances} />
+      </div>
+
+      <div className={styles.stack}>
+      <Card icon={<Monitor size={17} strokeWidth={1.6} aria-hidden />} title="外观">
+        <ThemePicker />
+      </Card>
+
+      <Card icon={<Gauge size={17} strokeWidth={1.6} aria-hidden />} title="用量与额度" aside={<span className="pill">已用 {pct}%</span>}>
+        <div className={styles.grid2}>
+          <div className={styles.statBox}><small className="muted">运行中任务</small><strong>{activeCount}</strong></div>
+          <div className={styles.statBox}><small className="muted">每日上限</small><strong>{dailyCap || '—'}<em> CU</em></strong></div>
+          <div className={styles.statBox}><small className="muted">已用</small><strong>{cuNumber(used)}<em> CU</em></strong></div>
+          <div className={styles.statBox}><small className="muted">使用率</small><strong>{pct}%</strong></div>
+        </div>
       </Card>
 
       <Card icon={<Cpu size={17} strokeWidth={1.6} aria-hidden />} title="GPU">
@@ -126,6 +129,8 @@ export function SettingsPanel({
 
       <button className="button secondary big" type="button" onClick={onLogout}><LogOut size={17} strokeWidth={1.6} aria-hidden />退出登录</button>
       {error && <p className="status error" role="alert">{error}</p>}
+      </div>
+      </div>
     </div>
   );
 }

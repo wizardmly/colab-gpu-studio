@@ -138,6 +138,7 @@ export function TasksPanel({
       {actionError && !releaseTarget && <p className="status error" role="alert">{actionError}</p>}
       {status && <p className="status" role="status">{status}</p>}
 
+      <div className={styles.browseToolbar}>
       <label className={styles.searchBox}>
         <Search size={17} strokeWidth={1.6} aria-hidden />
         <input aria-label="搜索任务" placeholder="搜索任务（名称、编号）" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(30); }} />
@@ -179,6 +180,7 @@ export function TasksPanel({
           </div>
         </div>
       </div>
+      </div>
 
       {counts.running > 0 && filter !== 'running' && (
         <button type="button" className={styles.banner} onClick={() => setFilter('running')}>
@@ -189,7 +191,7 @@ export function TasksPanel({
       )}
 
       {filtered.length ? (
-        <div className={styles.list}>
+        <div className={styles.jobList}>
           {filtered.slice(0, limit).map((job, index) => {
             const jobKey = String(job.id || job.job_id || `job-${index}`);
             const s = stateOf(job);
@@ -229,7 +231,7 @@ export function TasksPanel({
                       {[video ? '视频' : '图片', size, job.provider === 'mock' ? '模拟' : job.provider === 'colab' ? 'Colab' : ''].filter(Boolean).join(' · ')}
                     </p>
                     <p className="muted small">创建于 {formatDateTime(job.created_at)}</p>
-                    {instanceId ? <button type="button" className={styles.linkButton} onClick={() => onInstance?.(job)}>{machineInfo}</button>
+                    {instanceId ? <button type="button" className={`${styles.linkButton} ${styles.jobMachine}`} onClick={() => onInstance?.(job)}>{machineInfo}</button>
                       : <p className="muted small">{machineInfo}</p>}
                   </div>
                 </div>
@@ -243,18 +245,18 @@ export function TasksPanel({
                   </div>
                 )}
 
-                {err && <p className="status error" role="alert">{err}</p>}
+                {err && <p className={`status error ${styles.jobError}`} role="alert">{err}</p>}
 
                 <div className={styles.cardActions}>
-                  <button className="button small" style={{ flex: 1 }} type="button" onClick={() => onDetail(job)}>查看详情</button>
+                  <button className={`button small ${styles.jobMainAction}`} type="button" onClick={() => onDetail(job)}>查看详情</button>
                   {liveInstance && !retained && onRetain && <button className="button secondary small" type="button" onClick={() => onRetain(job)}>保留这台机器</button>}
                   {retained && <span className="pill">已保留{job.retained_until ? `至 ${formatDateTime(String(job.retained_until))}` : ''}</span>}
                   {!terminalStates.has(s) ? (
-                    <button className="button secondary small" style={{ flex: 1 }} type="button" onClick={() => onCancel(job.id)}>
+                    <button className={`button secondary small ${styles.jobMainAction}`} type="button" onClick={() => onCancel(job.id)}>
                       <Square size={13} strokeWidth={1.8} aria-hidden />取消
                     </button>
                   ) : (
-                    <button className="button secondary small" style={{ flex: 1 }} type="button" disabled={Boolean(busy)} onClick={() => onRetry(job.id)}>
+                    <button className={`button secondary small ${styles.jobMainAction}`} type="button" disabled={Boolean(busy)} onClick={() => onRetry(job.id)}>
                       <RotateCcw size={13} strokeWidth={1.8} aria-hidden />{failed ? '重试' : '再来一次'}
                     </button>
                   )}

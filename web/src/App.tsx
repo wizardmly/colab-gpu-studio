@@ -32,6 +32,7 @@ import styles from './gpu.module.css';
 
 const tabs = ['创作', '任务', '作品', '算力'] as const;
 type Tab = typeof tabs[number] | '设置';
+const tabIcons = { 创作: Sparkles, 任务: Zap, 作品: ImageIcon, 算力: Cpu, 设置: SettingsIcon } as const;
 const terminalStates = new Set(['completed', 'succeeded', 'failed', 'failed_final', 'cancelled', 'cancelled_local', 'blocked']);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -277,6 +278,10 @@ export default function App() {
   const activeJobsCount = useMemo(() => {
     return jobs.filter((j) => !terminalStates.has(String(j.state || '').toLowerCase())).length;
   }, [jobs]);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [tab]);
 
   useEffect(() => {
     const expire = () => setLoggedIn(false);
@@ -819,17 +824,19 @@ export default function App() {
           <button className="iconButton" type="button" aria-label="新建项目" title="新建项目" onClick={() => setShowNewProject(true)}>
             <Plus size={18} strokeWidth={1.6} aria-hidden />
           </button>
-          <button className="iconButton" aria-label="打开设置" onClick={() => setTab('设置')}>
+          <button className="iconButton mobileSettings" aria-label="打开设置" onClick={() => setTab('设置')}>
             <SettingsIcon size={18} strokeWidth={1.6} aria-hidden />
           </button>
         </div>
       </header>
 
-      <nav className="bottomNav" aria-label="工作区导航">
-        {tabs.map((item) => {
-          const Icon = item === '创作' ? Sparkles : item === '任务' ? Zap : item === '作品' ? ImageIcon : Cpu;
+      <nav className="workspaceNav" aria-label="工作区导航">
+        {([...tabs, '设置'] as const).map((item) => {
+          const Icon = tabIcons[item];
           return (
-            <button key={item} type="button" aria-current={tab === item ? 'page' : undefined} onClick={() => setTab(item)}>
+            <button key={item} type="button" className={item === '设置' ? 'desktopSettings' : undefined}
+              aria-label={item === '设置' ? '打开设置' : undefined}
+              aria-current={tab === item ? 'page' : undefined} onClick={() => setTab(item)}>
               <Icon size={21} strokeWidth={1.5} aria-hidden />
               <span>{item}</span>
               {item === '任务' && activeJobsCount > 0 && <span className="tabBadge">{activeJobsCount}</span>}
@@ -1055,7 +1062,7 @@ export default function App() {
       {/* 任务详情 */}
       {detail && (
         <div className={styles.dialogBackdrop} role="presentation" onClick={() => setDetail(null)}>
-          <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="任务详情" onClick={(e) => e.stopPropagation()}>
+          <section className={`${styles.dialog} ${styles.detailDialog}`} role="dialog" aria-modal="true" aria-label="任务详情" onClick={(e) => e.stopPropagation()}>
             <div className={styles.cardHead}>
               <h2>任务详情 · {detail.id.slice(0, 8)}</h2>
               <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={() => setDetail(null)}><X size={18} strokeWidth={1.6} aria-hidden /></button>
@@ -1095,7 +1102,7 @@ export default function App() {
       {/* 作品查看 */}
       {viewer && (
         <div className={styles.dialogBackdrop} role="presentation" onClick={() => setViewer(null)}>
-          <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="查看作品" onClick={(e) => e.stopPropagation()}>
+          <section className={`${styles.dialog} ${styles.viewerDialog}`} role="dialog" aria-modal="true" aria-label="查看作品" onClick={(e) => e.stopPropagation()}>
             <div className={`${styles.cardHead} ${styles.viewerHead}`}>
               <h2>{viewer.filename || viewer.id}</h2>
               <div className={styles.viewerHeadActions}>

@@ -54,6 +54,7 @@ export function VisualAssetSlots({
   onInsertPromptTag?: (tag: string) => void;
 }) {
   const [picker, setPicker] = useState<PickerState>(null);
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'generated' | 'uploaded'>('all');
   const [dragOver, setDragOver] = useState(false);
   const refsUploadInputRef = useRef<HTMLInputElement | null>(null);
   const slotUploadInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
@@ -61,6 +62,7 @@ export function VisualAssetSlots({
 
   useEffect(() => {
     if (!picker) return;
+    setSourceFilter('all');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation();
@@ -125,6 +127,12 @@ export function VisualAssetSlots({
 
   const pickerAcceptType = picker?.mode === 'slot' ? picker.acceptType : 'image';
   const pickerAssets = assets.filter((item) => isCompatibleAsset(item, pickerAcceptType));
+  const isGeneratedAsset = (asset: GalleryAsset) => Boolean(asset.source_job_id || asset.gpu_job_id);
+  const generatedCount = pickerAssets.filter(isGeneratedAsset).length;
+  const uploadedCount = pickerAssets.length - generatedCount;
+  const filteredPickerAssets = pickerAssets.filter((item) => (
+    sourceFilter === 'all' ? true : sourceFilter === 'generated' ? isGeneratedAsset(item) : !isGeneratedAsset(item)
+  ));
   const refSelectedMap = new Map<string, number>();
   filledRefs.forEach((item, idx) => {
     if (!refSelectedMap.has(item.assetId)) refSelectedMap.set(item.assetId, idx + 1);
@@ -417,57 +425,85 @@ export function VisualAssetSlots({
             />
 
             {pickerAssets.length > 0 ? (
-              <div className={styles.assetLibraryGrid}>
-                {pickerAssets.map((asset) => {
-                  const slotNum = picker.mode === 'refs-add' ? refSelectedMap.get(asset.id) : undefined;
-                  const isCurrentSlot = picker.mode === 'slot' && String(values[picker.key] ?? '') === asset.id;
-                  const selected = Boolean(slotNum || isCurrentSlot);
-                  return (
+              <>
+                <div className={styles.optionChips} role="group" aria-label="素材来源筛选">
+                  {[
+                    { id: 'all' as const, label: `全部 (${pickerAssets.length})` },
+                    { id: 'generated' as const, label: `生成作品 (${generatedCount})` },
+                    { id: 'uploaded' as const, label: `上传素材 (${uploadedCount})` },
+                  ].map((tab) => (
                     <button
+                      key={tab.id}
                       type="button"
-                      key={asset.id}
-                      className={styles.assetLibraryTile}
-                      data-selected={selected || undefined}
-                      title={asset.filename || asset.id}
-                      onClick={() => {
-                        if (picker.mode === 'refs-add') {
-                          const existingEntry = multiRefGroup.find((item) => String(values[item.key] ?? '') === asset.id);
-                          if (existingEntry) {
-                            onPatchParams(
-                              onlyKeysDelta(refKeys, removeAndCompactAssetSlot(refKeys, values, existingEntry.key, true)),
-                            );
-                          } else {
-                            onPatchParams(
-                              onlyKeysDelta(refKeys, fillAssetSlots(refKeys, values, [asset.id])),
-                            );
-                          }
-                        } else if (picker.isRefGroup) {
-                          onPatchParams(
-                            onlyKeysDelta(refKeys, fillAssetSlots(refKeys, values, [asset.id], picker.key)),
-                          );
-                          setPicker(null);
-                        } else {
-                          onPatchParams({ [picker.key]: asset.id });
-                          setPicker(null);
-                        }
-                      }}
+                      className={styles.optionChip}
+                      data-active={sourceFilter === tab.id || undefined}
+                      aria-pressed={sourceFilter === tab.id}
+                      onClick={() => setSourceFilter(tab.id)}
                     >
-                      <span className={styles.assetLibraryThumb}>
-                        {asset.mime.startsWith('image/') ? (
-                          <img className={styles.assetLibraryImg} src={assetUrl(asset, true)} alt={asset.filename || '图片'} loading="lazy" />
-                        ) : (
-                          <span className={styles.refMedia}>{asset.filename || '素材'}</span>
-                        )}
-                        {slotNum && <span className={styles.assetSlotBadge}>#{slotNum}</span>}
-                        {isCurrentSlot && (
-                          <span className={styles.refCheck}><Check size={12} strokeWidth={2.4} aria-hidden /></span>
-                        )}
-                      </span>
-                      <small className={styles.assetLibraryName}>{asset.filename || '图片'}</small>
+                      {tab.label}
                     </button>
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+                {filteredPickerAssets.length > 0 ? (
+                  <div className={styles.assetLibraryGrid}>
+                    {filteredPickerAssets.map((asset) => {
+                      const slotNum = picker.mode === 'refs-add' ? refSelectedMap.get(asset.id) : undefined;
+                      const isCurrentSlot = picker.mode === 'slot' && String(values[picker.key] ?? '') === asset.id;
+                      const selected = Boolean(slotNum || isCurrentSlot);
+                      return (
+                        <button
+                          type="button"
+                          key={asset.id}
+                          className={styles.assetLibraryTile}
+                          data-selected={selected || undefined}
+                          title={asset.filename || asset.id}
+                          onClick={() => {
+                            if (picker.mode === 'refs-add') {
+                              const existingEntry = multiRefGroup.find((item) => String(values[item.key] ?? '') === asset.id);
+                              if (existingEntry) {
+                                onPatchParams(
+                                  onlyKeysDelta(refKeys, removeAndCompactAssetSlot(refKeys, values, existingEntry.key, true)),
+                                );
+                              } else {
+                                onPatchParams(
+                                  onlyKeysDelta(refKeys, fillAssetSlots(refKeys, values, [asset.id])),
+                                );
+                              }
+                            } else if (picker.isRefGroup) {
+                              onPatchParams(
+                                onlyKeysDelta(refKeys, fillAssetSlots(refKeys, values, [asset.id], picker.key)),
+                              );
+                              setPicker(null);
+                            } else {
+                              onPatchParams({ [picker.key]: asset.id });
+                              setPicker(null);
+                            }
+                          }}
+                        >
+                          <span className={styles.assetLibraryThumb}>
+                            {asset.mime.startsWith('image/') ? (
+                              <img className={styles.assetLibraryImg} src={assetUrl(asset, true)} alt={asset.filename || '图片'} loading="lazy" />
+                            ) : (
+                              <span className={styles.refMedia}>{asset.filename || '素材'}</span>
+                            )}
+                            {slotNum && <span className={styles.assetSlotBadge}>#{slotNum}</span>}
+                            {isCurrentSlot && (
+                              <span className={styles.refCheck}><Check size={12} strokeWidth={2.4} aria-hidden /></span>
+                            )}
+                            {isGeneratedAsset(asset) && <span className={styles.assetOriginBadge}>作品</span>}
+                          </span>
+                          <small className={styles.assetLibraryName}>{asset.filename || '图片'}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="empty">
+                    <strong>该分类下暂无图片</strong>
+                    <span>可切换到「全部」或点右上角上传新图片。</span>
+                  </div>
+                )}
+              </>
             ) : (
               <div className="empty">
                 <strong>当前项目还没有可选图片</strong>

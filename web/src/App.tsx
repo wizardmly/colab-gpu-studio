@@ -18,7 +18,13 @@ import { ColabRuntimeBar } from './components/ColabRuntimeBar';
 import { splitParams } from './components/GpuParamForm';
 import { referenceAssets, supportsReferences } from './components/ReferencePicker';
 import { resolveGpuCheckRequest } from './lib/colab-check';
-import { isAccountBudgetMissing, parseOAuthReturnLocation, resolveDefaultMaxRuntime, resolveDefaultProvider } from './lib/colab-studio';
+import {
+  isAccountBudgetMissing,
+  mergeProjectReferenceAssets,
+  parseOAuthReturnLocation,
+  resolveDefaultMaxRuntime,
+  resolveDefaultProvider,
+} from './lib/colab-studio';
 import { jobStateLabel } from './lib/job-stage-rows';
 import { jobDetailTimings, paramRows, stageSecondsTotal, taskStatusNote } from './lib/job-detail-copy';
 import { resolveInstanceSubmission } from './lib/instance-submission';
@@ -325,6 +331,11 @@ export default function App() {
     .map((job) => `${job.id}:${(job.output_asset_ids || []).join(',')}`)
     .join('|'), [jobs]);
 
+  const projectReferenceAssets = useMemo(
+    () => mergeProjectReferenceAssets(referenceImages, gallery, projectId),
+    [referenceImages, gallery, projectId],
+  );
+
   const hasUsableColab = useMemo(
     () => resolveDefaultProvider(settings, accounts, null) === 'colab',
     [settings, accounts],
@@ -523,6 +534,9 @@ export default function App() {
   useEffect(() => {
     setReferenceImages([]);
     setSelectedAssets([]);
+  }, [projectId, loggedIn]);
+
+  useEffect(() => {
     if (!projectId || !loggedIn) return;
     let alive = true;
     getReferenceAssets(projectId).then((next) => {
@@ -531,7 +545,7 @@ export default function App() {
       if (alive) setError(`素材：${apiMessage(cause)}`);
     });
     return () => { alive = false; };
-  }, [projectId, loggedIn]);
+  }, [projectId, loggedIn, tab, completedOutputsSignature]);
 
   useEffect(() => {
     setSelectedAssets([]);
@@ -637,7 +651,7 @@ export default function App() {
         setError(decision.message);
         return;
       }
-      const validAssetIds = new Set(referenceAssets(referenceImages).filter((a) => a.project_id === projectId).map((a) => a.id));
+      const validAssetIds = new Set(projectReferenceAssets.filter((a) => a.project_id === projectId).map((a) => a.id));
       const hasAssetParamSlots = splitParams(manifest).assets.length > 0;
       const body = {
         project_id: projectId,
@@ -746,6 +760,7 @@ export default function App() {
     try {
       await deleteAsset(asset.id);
       setGallery((curr) => curr.filter((i) => i.id !== asset.id));
+      setReferenceImages((curr) => curr.filter((i) => i.id !== asset.id));
       setViewer(null);
     } catch (cause) {
       setError(`删除失败：${apiMessage(cause)}`);
@@ -1065,7 +1080,7 @@ export default function App() {
             manifest={manifest}
             params={params}
             setParams={setParams}
-            gallery={referenceImages}
+            gallery={projectReferenceAssets}
             outputs={gallery}
             jobs={enrichedJobs}
             highlightedJobId={lastSubmittedJobId}

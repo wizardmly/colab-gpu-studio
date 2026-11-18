@@ -1,7 +1,7 @@
 import type { GpuAccount, GpuInstance } from '../components/AccountDirectory';
 import type { RuntimeChoice } from '../pages/CreatePage';
 import { isColabAccountQueryable, isColabAccountUsable, resolveGpuCheckRequest } from './colab-check';
-import type { GpuJob, GpuSettings, Provider } from './gpu-api';
+import type { GalleryAsset, GpuJob, GpuSettings, Provider } from './gpu-api';
 import { instanceIdentity, instanceReusable } from './instance-submission';
 
 export type ColabRuntimeTone = 'warm' | 'busy' | 'ready' | 'attention' | 'mock';
@@ -419,4 +419,25 @@ export function removeAndCompactAssetSlot(
     next[key] = remaining[index] ?? '';
   });
   return next;
+}
+
+/** Merge project uploaded assets and completed gallery outputs without duplicates, newest first. */
+export function mergeProjectReferenceAssets(
+  referenceImages: GalleryAsset[],
+  galleryOutputs: GalleryAsset[],
+  projectId: string,
+): GalleryAsset[] {
+  if (!projectId) return [];
+  const seen = new Set<string>();
+  const combined: GalleryAsset[] = [];
+  for (const asset of [...galleryOutputs, ...referenceImages]) {
+    if (!asset?.id || seen.has(asset.id)) continue;
+    if (asset.project_id && asset.project_id !== projectId) continue;
+    if (asset.mock || asset.metadata?.mock === true) continue;
+    if (!/^(image|video|audio)\//.test(String(asset.mime || ''))) continue;
+    seen.add(asset.id);
+    combined.push(asset);
+  }
+  combined.sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+  return combined;
 }

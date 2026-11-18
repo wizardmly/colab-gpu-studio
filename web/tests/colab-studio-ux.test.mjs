@@ -15,6 +15,7 @@ const bundled = await build({
         colabPipelineSteps,
         describeColabRuntime,
         fillAssetSlots,
+        mergeProjectReferenceAssets,
         parseOAuthReturnLocation,
         removeAndCompactAssetSlot,
         resolveDefaultMaxRuntime,
@@ -38,6 +39,7 @@ const {
   colabPipelineSteps,
   describeColabRuntime,
   fillAssetSlots,
+  mergeProjectReferenceAssets,
   parseOAuthReturnLocation,
   removeAndCompactAssetSlot,
   resolveDefaultMaxRuntime,
@@ -189,6 +191,8 @@ test('PC workspace keeps ColabRuntimeBar, removes Colab 实时舞台, constrains
 
   assert.match(app, /<ColabRuntimeBar\b/);
   assert.match(app, /navLogoutBtn/);
+  assert.match(app, /gallery=\{projectReferenceAssets\}/);
+  assert.match(app, /getReferenceAssets\(projectId\)[\s\S]*completedOutputsSignature/);
   assert.match(app, /replaceState/);
   const submitBlockMatch = app.match(/async function submitJob\(\)[\s\S]*?\n  \}/);
   assert.ok(submitBlockMatch, 'submitJob function should exist in App.tsx');
@@ -241,6 +245,25 @@ test('fillAssetSlots and removeAndCompactAssetSlot manage ref slots and frame sl
     last_frame: 'f2',
   }, 'first_frame', false);
   assert.deepEqual(frameCleared, { first_frame: '', last_frame: 'f2' });
+});
+
+test('mergeProjectReferenceAssets includes new gallery works, deduplicates, sorts newest first, and filters mock/foreign assets', () => {
+  const uploadedOld = { id: 'up-1', project_id: 'p1', mime: 'image/png', created_at: '2026-11-18T01:00:00Z' };
+  const generatedOld = { id: 'gen-1', project_id: 'p1', mime: 'image/png', source_job_id: 'j1', created_at: '2026-11-18T02:00:00Z' };
+  const generatedNew = { id: 'gen-2', project_id: 'p1', mime: 'image/png', source_job_id: 'j2', created_at: '2026-11-18T03:00:00Z' };
+  const generatedVideo = { id: 'vid-1', project_id: 'p1', mime: 'video/mp4', source_job_id: 'j3', created_at: '2026-11-18T04:00:00Z' };
+  const mockWork = { id: 'mock-1', project_id: 'p1', mime: 'image/png', mock: true, source_job_id: 'j4', created_at: '2026-11-18T05:00:00Z' };
+  const foreignWork = { id: 'other-1', project_id: 'p2', mime: 'image/png', source_job_id: 'j5', created_at: '2026-11-18T06:00:00Z' };
+
+  const merged = mergeProjectReferenceAssets(
+    [uploadedOld, generatedOld],
+    [generatedOld, generatedNew, generatedVideo, mockWork, foreignWork],
+    'p1',
+  );
+  assert.deepEqual(
+    merged.map((a) => a.id),
+    ['vid-1', 'gen-2', 'gen-1', 'up-1'],
+  );
 });
 
 async function loadSsrExports(contents, sourcefile) {

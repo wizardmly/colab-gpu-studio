@@ -10,6 +10,7 @@ import math
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Callable
 
@@ -172,6 +173,230 @@ class Scheduler:
         if not patch:
             return job
         return self._update("jobs", job["id"], patch, job.get("owner_id"))
+
+    @staticmethod
+    def _extract_spec_dict(raw: Any) -> dict | None:
+        if not isinstance(raw, Mapping):
+            return None
+        key = raw.get("key") if isinstance(raw.get("key"), Mapping) else raw
+        if not isinstance(key, Mapping) or not (key.get("accelerator") or key.get("variant")):
+            return None
+        return {k: key[k] for k in ("variant", "accelerator", "shape") if k in key and key[k] is not None} or None
+
+    def _job_requested_spec(self, job: dict) -> dict | None:
+        if self._provider_name(job) != "colab":
+            return None
+        policy = job.get("execution_policy") or {}
+        if policy.get("gpu_selection") == "auto" and not job.get("requested_spec") and not policy.get("requested_spec"):
+            return None
+        raw = (
+            job.get("requested_spec")
+            or policy.get("requested_spec")
+            or ((job.get("snapshot") or {}).get("manifest") or {}).get("compute_spec")
+        )
+        return self._extract_spec_dict(raw)
+
+    def _job_gpu_label(self, job: dict) -> str:
+        if self._provider_name(job) == "mock":
+            return "MOCK"
+        policy = job.get("execution_policy") or {}
+        if policy.get("gpu_selection") == "auto" and not job.get("requested_spec") and not policy.get("requested_spec"):
+            return "GPU"
+        spec = self._job_requested_spec(job)
+        accel = str((spec or {}).get("accelerator") or "").upper()
+        return accel or "GPU"
+
+    def _instance_spec_dict(self, instance: dict | None, lease: dict | None = None) -> dict | None:
+        raw = None
+        if isinstance(instance, Mapping):
+            raw = instance.get("runtime_spec_requested") or instance.get("runtime_spec_reported")
+        if not raw and isinstance(lease, Mapping):
+            raw = lease.get("selected_spec")
+        return self._extract_spec_dict(raw)
+
+    def _spec_can_run_job(self, actual_spec: dict | None, job: dict, provider_name: str) -> bool:
+        if provider_name == "mock":
+            return True
+        policy = job.get("execution_policy") or {}
+        req = self._job_requested_spec(job)
+        if req is None:
+            if policy.get("gpu_selection") == "auto":
+                return bool(actual_spec and str(actual_spec.get("variant") or "").upper() in {"GPU", "VARIANT_GPU"})
+            return True if actual_spec is None else bool(str(actual_spec.get("variant") or "").upper() in {"GPU", "VARIANT_GPU"})
+        if actual_spec is None:
+            return False
+        if str(actual_spec.get("variant") or "VARIANT_GPU").upper() != str(req.get("variant") or "VARIANT_GPU").upper():
+            return False
+        if str(actual_spec.get("accelerator") or "").upper() != str(req.get("accelerator") or "").upper():
+            return False
+        req_shape = str(req.get("shape") or "SHAPE_STANDARD").upper()
+        actual_shape = str(actual_spec.get("shape") or "SHAPE_STANDARD").upper()
+        if req_shape == "SHAPE_HIGHMEM":
+            return actual_shape == "SHAPE_HIGHMEM"
+        if req_shape == "SHAPE_STANDARD" and actual_shape in {"SHAPE_STANDARD", "SHAPE_HIGHMEM"}:
+            return True
+        return actual_shape == req_shape
+
+    @staticmethod
+    def _account_allows_job(account: Mapping, project_id: str | None, provider_name: str) -> bool:
+        status = str(account.get("auth_status") or account.get("status") or account.get("connection_status") or "connected").lower()
+        connected = account.get("connected", status == "connected")
+        if connected is not True or account.get("enabled", True) is not True or account.get("disabled", False) is True:
+            return False
+        if account.get("allow_allocation", True) is not True:
+            return False
+        if status in {"disabled", "needs_reauth", "error", "revoked"}:
+            return False
+        allowed = account.get("allowed_projects") or account.get("allowed_project_ids") or account.get("project_ids") or account.get("projects")
+        if allowed and project_id and project_id not in set(allowed):
+            return False
+        acct_provider = account.get("provider")
+        if provider_name != "mock" and acct_provider not in {None, provider_name, "colab", "google"}:
+            return False
+        return True
+
+    def _capacity_wait_info(
+        self,
+        job: dict,
+        *,
+        instances: list[dict] | None = None,
+        leases: list[dict] | None = None,
+        accounts: list[dict] | None = None,
+    ) -> dict | None:
+        if job.get("state") != "waiting_for_capacity" or job.get("awaiting_prep"):
+            return None
+        snapshot = job.get("snapshot") or {}
+        if job.get("prep") or snapshot.get("prep") or snapshot.get("system_smoke"):
+            return None
+        if job.get("instance_id") or job.get("lease_id"):
+            return None
+        policy = job.get("execution_policy") or {}
+        if policy.get("queue_mode") == "new_instance":
+            return None
+        if not self._is_v020_job(job):
+            return None
+        owner_id = job.get("owner_id")
+        if not owner_id:
+            return None
+        provider_name = self._provider_name(job)
+        if instances is None:
+            list_fn = getattr(self.instance_service, "list", None)
+            if not callable(list_fn):
+                return None
+            owner_instances = list_fn(owner_id)
+        else:
+            owner_instances = instances
+        owner_leases = self._leases_for(owner_id) if leases is None else leases
+        leases_by_id = {row["id"]: row for row in owner_leases if row.get("id")}
+        gpu_label = self._job_gpu_label(job)
+
+        req_instance = job.get("requested_instance_id") or policy.get("instance_id")
+        if req_instance:
+            target = next((inst for inst in owner_instances if self._instance_id(inst) == req_instance), None)
+            if not target:
+                return None
+            target_state = str(target.get("state") or "").lower()
+            if (
+                target_state in {"deleted", "released", "releasing", "unknown", "cleanup_pending", "quarantined"}
+                or target.get("manual_stop_requested")
+                or target.get("runtime_deleted")
+            ):
+                return None
+            if target_state in {"retained_idle", "ready"} and target.get("current_job_id") in {None, job["id"]}:
+                return None
+            return {
+                "queue_state": "waiting_instance",
+                "queue_gpu": None if provider_name == "mock" else gpu_label,
+                "queue_message": (
+                    f"正在排队等待指定热机完成前序任务（{gpu_label} 队列）"
+                    if provider_name == "colab"
+                    else "正在排队等待指定热机完成前序任务"
+                ),
+            }
+
+        req_acct = job.get("requested_account_id") or policy.get("account_id")
+        for inst in owner_instances:
+            if inst.get("provider", provider_name) != provider_name:
+                continue
+            if req_acct and inst.get("account_id") != req_acct:
+                continue
+            inst_state = str(inst.get("state") or "").lower()
+            if inst_state not in {"ready", "retained_idle"} or inst.get("current_job_id") is not None:
+                continue
+            if inst.get("manual_stop_requested") or inst.get("runtime_deleted"):
+                continue
+            sig = job.get("compatibility_signature")
+            if sig and inst.get("compatibility_signature") != sig:
+                continue
+            inst_spec = self._instance_spec_dict(inst, leases_by_id.get(inst.get("lease_id")))
+            if self._spec_can_run_job(inst_spec, job, provider_name):
+                return None
+
+        active_instance_states = {"requested", "allocating", "preparing", "loading", "ready", "busy", "releasing", "cleanup_pending"}
+        busy_instances = [
+            inst
+            for inst in owner_instances
+            if inst.get("provider", provider_name) == provider_name
+            and str(inst.get("state") or "").lower() in active_instance_states
+            and not (str(inst.get("state") or "").lower() == "ready" and inst.get("current_job_id") is None)
+        ]
+        active_leases = [
+            row
+            for row in owner_leases
+            if row.get("provider", provider_name) == provider_name
+            and self._lease_blocks(row)
+            and row.get("state") != "idle"
+            and row.get("owner_job_id") != job["id"]
+        ]
+
+        if req_acct:
+            candidate_accounts = [req_acct]
+        else:
+            acct_rows = self._list("accounts", owner_id) if accounts is None else accounts
+            usable = [
+                a.get("account_id") or a["id"]
+                for a in acct_rows
+                if self._account_allows_job(a, job.get("project_id"), provider_name)
+            ]
+            candidate_accounts = usable
+
+        if candidate_accounts:
+            busy_accounts = {
+                acct
+                for row in (*busy_instances, *active_leases)
+                if (acct := row.get("account_id")) is not None
+            }
+            if any(acct not in busy_accounts for acct in candidate_accounts):
+                return None
+            relevant_instances = [inst for inst in busy_instances if inst.get("account_id") in set(candidate_accounts)]
+            relevant_leases = [row for row in active_leases if row.get("account_id") in {None, *candidate_accounts}]
+        else:
+            relevant_instances = busy_instances
+            relevant_leases = active_leases
+
+        if not relevant_instances and not relevant_leases:
+            return None
+
+        same_spec_live = any(
+            self._spec_can_run_job(
+                self._instance_spec_dict(inst, leases_by_id.get(inst.get("lease_id"))),
+                job,
+                provider_name,
+            )
+            for inst in relevant_instances
+        )
+        if provider_name == "colab":
+            if same_spec_live:
+                message = f"正在排队等待前序 {gpu_label} 任务完成，完成后自动接力热机"
+            else:
+                message = f"当前账号有任务运行中，已排入 {gpu_label} 队列等待前序任务完成"
+        else:
+            message = "正在排队等待前序任务完成，完成后自动运行"
+        return {
+            "queue_state": "waiting_capacity",
+            "queue_gpu": None if provider_name == "mock" else gpu_label,
+            "queue_message": message,
+        }
 
     def _service_instances(self) -> list[dict]:
         if self.instance_service is None:
@@ -857,7 +1082,22 @@ class Scheduler:
         except Exception as exc:
             return self._begin_failure(job, "gpu_provider_unavailable", self._safe_error(exc))
         if lease.get("handle"):
-            return self._set_state(job, "preparing", "GPU runtime allocation recovered")
+            patch: dict[str, Any] = {
+                "queue_state": None,
+                "queue_gpu": None,
+                "queue_message": None,
+            }
+            if lease.get("request_id") and not job.get("request_id"):
+                patch["request_id"] = lease["request_id"]
+            if lease.get("runtime_id") and not job.get("runtime_id"):
+                patch["runtime_id"] = lease["runtime_id"]
+            if lease.get("deadline_epoch") is not None and not job.get("deadline_epoch"):
+                patch["deadline_epoch"] = lease["deadline_epoch"]
+            if not job.get("started_epoch"):
+                patch["started_epoch"] = self.clock()
+            if not job.get("started_at"):
+                patch["started_at"] = self.clock()
+            return self._set_state(job, "preparing", "GPU runtime allocation recovered", **patch)
         try:
             if isinstance(provider, DisabledProvider):
                 raise ProviderUnavailable(provider.reason)
@@ -1379,7 +1619,7 @@ class Scheduler:
             patch["ccu_source"] = "after_missing"
         return patch
 
-    def _record_usage(self, job: dict, lease: dict, stopped_at: float) -> None:
+    def _record_usage(self, job: dict, lease: dict, stopped_at: float, *, runtime_deleted: bool = True) -> None:
         if any(row.get("job_id") == job.get("id") and row.get("execution_id") == job.get("execution_id")
                for row in self._list("usage", job.get("owner_id"))):
             return
@@ -1424,7 +1664,7 @@ class Scheduler:
             {
                 "actual_units": 0.0 if is_mock else measured,
                 "stopped_at": stopped_at,
-                "runtime_deleted": True,
+                "runtime_deleted": runtime_deleted,
                 **{key: value for key, value in spend.items() if key.startswith("ccu_")},
             },
             job.get("owner_id"),
@@ -1470,23 +1710,170 @@ class Scheduler:
             patch.update(error_code=None, error_message=None)
         return self._set_state(job, state, message, cleanup_next_epoch=0, **patch)
 
-    def _cleanup(self, job: dict) -> dict:
-        lease = self._lease(job)
-        job = self._trusted_plugin_cleanup(job, lease)
-        if lease and job.get("batch_id") and job.get("cleanup_final_state") == "completed":
-            waiting = [j for j in self._list("jobs", job["owner_id"])
-                       if j.get("batch_id") == job["batch_id"] and j["state"] not in TERMINAL_STATES
-                       and j["id"] != job["id"] and not j.get("cancel_requested")]
+    def _try_queue_handoff(self, job: dict, lease: dict) -> dict | None:
+        if not lease or job.get("cleanup_final_state") != "completed":
+            return None
+        snapshot = job.get("snapshot") or {}
+        if job.get("prep") or snapshot.get("prep") or snapshot.get("system_smoke"):
+            return None
+        owner_id = job.get("owner_id")
+        if not owner_id:
+            return None
+
+        # 1. Existing same-batch sibling handoff preserves legacy/unit-test contracts.
+        if job.get("batch_id"):
+            waiting = [
+                j
+                for j in self._list("jobs", owner_id)
+                if j.get("batch_id") == job["batch_id"]
+                and j["state"] not in TERMINAL_STATES
+                and j["id"] != job["id"]
+                and not j.get("cancel_requested")
+            ]
             waiting.sort(key=lambda j: j.get("queue_order", 0))
             next_job = waiting[0] if waiting else None
-            if next_job:
+            if next_job and not self._await_prep(next_job):
                 with self.db_store.dispatch_lock() as acquired:
                     if not acquired:
                         return job
-                    transferred=self.store.handoff_lease(job['owner_id'],job['id'],next_job['id'],lease['id'],self.clock())
+                    transferred = self.store.handoff_lease(
+                        owner_id, job["id"], next_job["id"], lease["id"], self.clock()
+                    )
                 if transferred:
-                    self._event(job,'completed','Mock outputs verified; lease reused')
-                    return self._get('jobs',job['id'],job['owner_id'])
+                    self._event(job, "completed", "Mock outputs verified; lease reused")
+                    return self._get("jobs", job["id"], owner_id)
+
+        # 2. General spec-aware warm handoff across queued jobs (even under lifecycle="save").
+        if not self._is_v020_job(job):
+            return None
+        provider_name = self._provider_name(job)
+        job_instance_id = job.get("instance_id")
+        sql_instance = self._get("instances", job_instance_id, owner_id) if job_instance_id else None
+        if job_instance_id and sql_instance is None:
+            # Test doubles without durable SQL instance rows (e.g. FakeInstanceService) keep mock lifecycle path.
+            return None
+        if sql_instance is not None:
+            if (
+                sql_instance.get("manual_stop_requested")
+                or sql_instance.get("runtime_deleted")
+                or sql_instance.get("state") in {"deleted", "releasing", "cleanup_pending", "quarantined", "unknown"}
+            ):
+                return None
+            hard = sql_instance.get("hard_deadline_at")
+            hard_src = sql_instance.get("hard_deadline_source")
+            if hard is not None and hard_src != "lease_deadline" and self.clock() >= float(hard):
+                return None
+        if lease.get("state") not in {"active", "busy"} or self.clock() >= float(lease.get("deadline_epoch") or 0):
+            return None
+
+        inst_acct = (sql_instance or {}).get("account_id") or lease.get("account_id") or job.get("account_id")
+        actual_spec = self._instance_spec_dict(sql_instance, lease)
+        accounts = self._list("accounts", owner_id)
+        eligible: list[tuple[tuple, dict, dict]] = []
+        for cand in self._list("jobs", owner_id):
+            if cand.get("id") == job["id"]:
+                continue
+            if cand.get("state") not in {"queued", "validating", "waiting_for_capacity"}:
+                continue
+            if cand.get("cancel_requested") or cand.get("awaiting_prep"):
+                continue
+            if cand.get("lease_id") is not None or cand.get("instance_id") is not None:
+                continue
+            cand_snap = cand.get("snapshot") or {}
+            if cand.get("prep") or cand_snap.get("prep") or cand_snap.get("system_smoke"):
+                continue
+            if self._provider_name(cand) != provider_name:
+                continue
+            cand_policy = cand.get("execution_policy") or {}
+            if cand_policy.get("queue_mode") == "new_instance":
+                continue
+            cand_req_inst = cand.get("requested_instance_id") or cand_policy.get("instance_id")
+            if (
+                provider_name != "colab"
+                and cand_policy.get("queue_mode") != "queue"
+                and not cand_req_inst
+            ):
+                continue
+            if (
+                job.get("compatibility_signature")
+                and cand.get("compatibility_signature")
+                and job.get("compatibility_signature") != cand.get("compatibility_signature")
+                and (provider_name == "mock" or (job.get("batch_id") and cand.get("batch_id") == job.get("batch_id")))
+            ):
+                continue
+            if cand_req_inst and cand_req_inst != job_instance_id:
+                continue
+            cand_req_acct = cand.get("requested_account_id") or cand_policy.get("account_id")
+            cand_acct = cand.get("account_id")
+            if inst_acct:
+                if cand_req_acct not in {None, "", inst_acct} or cand_acct not in {None, "", inst_acct}:
+                    continue
+                acct_row = next((a for a in accounts if (a.get("account_id") or a.get("id")) == inst_acct), None)
+                if acct_row is not None and not self._account_allows_job(acct_row, cand.get("project_id"), provider_name):
+                    continue
+            if not self._spec_can_run_job(actual_spec, cand, provider_name):
+                continue
+            if self._await_prep(cand):
+                continue
+            try:
+                runtime = self._effective_runtime(cand)
+                cand_provider = self._provider(cand)
+                ok, _, budget_patch = self._reserve_budget(cand, cand_provider)
+            except Exception:
+                continue
+            if not ok:
+                continue
+            validate_patch: dict[str, Any] = {}
+            if cand.get("budget_reserved") is None or cand.get("validated_epoch") is None:
+                validate_patch = {
+                    **budget_patch,
+                    "max_runtime_minutes": runtime,
+                    "validated_epoch": cand.get("validated_epoch") or self.clock(),
+                }
+            rank = (
+                0 if (cand_req_inst and cand_req_inst == job_instance_id) else 1,
+                cand.get("created_epoch", cand.get("created_at", "")),
+                cand.get("queue_order", 0),
+            )
+            eligible.append((rank, cand, validate_patch))
+
+        if not eligible:
+            return None
+        eligible.sort(key=lambda item: item[0])
+        _, next_job, validate_patch = eligible[0]
+        if validate_patch:
+            self._update("jobs", next_job["id"], validate_patch, owner_id)
+        next_deadline = self.clock() + self._effective_runtime(next_job) * 60
+        with self.db_store.dispatch_lock() as acquired:
+            if not acquired:
+                return job
+            transferred = self.store.handoff_lease(
+                owner_id,
+                job["id"],
+                next_job["id"],
+                lease["id"],
+                self.clock(),
+                allow_spec_handoff=True,
+                next_deadline_epoch=next_deadline,
+            )
+        if not transferred:
+            return None
+        self._record_usage(job, lease, self.clock(), runtime_deleted=False)
+        gpu_label = self._job_gpu_label(next_job)
+        if provider_name == "colab":
+            self._event(job, "completed", f"任务完成；当前 {gpu_label} 热机已自动交接给下一个排队任务")
+            self._event(next_job, "waiting_for_capacity", f"前序任务已完成，直接接力当前 {gpu_label} 热机开始运行")
+        else:
+            self._event(job, "completed", "任务完成；热机已无缝交接给下一个排队任务")
+            self._event(next_job, "waiting_for_capacity", "前序任务已完成，直接接力运行")
+        return self._get("jobs", job["id"], owner_id)
+
+    def _cleanup(self, job: dict) -> dict:
+        lease = self._lease(job)
+        job = self._trusted_plugin_cleanup(job, lease)
+        handed_off = self._try_queue_handoff(job, lease)
+        if handed_off is not None:
+            return handed_off
         final_state = job.get("cleanup_final_state") or job.get("requested_outcome") or "failed"
         if self._is_v020_job(job) and job.get("instance_id"):
             try:
@@ -1654,6 +2041,19 @@ class Scheduler:
                 return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
             if job.get("awaiting_prep"):
                 job = self._update("jobs", job["id"], {"awaiting_prep": False}, job.get("owner_id"))
+            wait_info = self._capacity_wait_info(job)
+            if wait_info is not None:
+                if any(job.get(k) != wait_info.get(k) for k in ("queue_state", "queue_gpu", "queue_message")):
+                    job = self._update("jobs", job["id"], wait_info, job.get("owner_id"))
+                    self._event(job, "waiting_for_capacity", wait_info["queue_message"])
+                return job
+            if job.get("queue_state") or job.get("queue_gpu") or job.get("queue_message"):
+                job = self._update(
+                    "jobs",
+                    job["id"],
+                    {"queue_state": None, "queue_gpu": None, "queue_message": None},
+                    job.get("owner_id"),
+                )
             if self._is_v020_job(job):
                 allocated = self._allocate_instance(job)
                 if allocated.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:
@@ -1689,13 +2089,39 @@ class Scheduler:
     def _claim_next_job(self) -> tuple[dict | None, str | None]:
         now = self.clock()
         jobs = self._list("jobs")
-        jobs.sort(
-            key=lambda x: (
-                # A job parked on its cache prep goes last, so it cannot starve the prep job it waits on.
-                0 if x.get("state") in {"cleanup_pending", "cleaning_up"} else 2 if x.get("awaiting_prep") else 1,
-                x.get("created_epoch", x.get("created_at", "")),
-            )
+        owners = {x.get("owner_id") for x in jobs if x.get("state") == "waiting_for_capacity" and x.get("owner_id")}
+        list_fn = getattr(self.instance_service, "list", None) if self.instance_service is not None else None
+        instances_by_owner = (
+            {o: list_fn(o) for o in owners}
+            if callable(list_fn)
+            else None
         )
+        leases_by_owner = {o: self._leases_for(o) for o in owners}
+        accounts_by_owner = {o: self._list("accounts", o) for o in owners}
+
+        def _priority(x: dict) -> tuple:
+            st = x.get("state")
+            if st in {"cleanup_pending", "cleaning_up"}:
+                bucket = 0
+            elif x.get("awaiting_prep"):
+                bucket = 2
+            elif st == "waiting_for_capacity":
+                owner = x.get("owner_id")
+                blocked = (
+                    self._capacity_wait_info(
+                        x,
+                        instances=instances_by_owner.get(owner) if instances_by_owner is not None else None,
+                        leases=leases_by_owner.get(owner),
+                        accounts=accounts_by_owner.get(owner),
+                    )
+                    is not None
+                )
+                bucket = 2 if blocked else 1
+            else:
+                bucket = 1
+            return (bucket, x.get("created_epoch", x.get("created_at", "")), x.get("queue_order", 0))
+
+        jobs.sort(key=_priority)
         for job in jobs:
             if job.get("state") not in ACTIVE_STATES:
                 continue

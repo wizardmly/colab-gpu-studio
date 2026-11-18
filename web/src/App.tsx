@@ -255,7 +255,7 @@ export default function App() {
   const [requestedRuntime, setMaxRuntime] = useState<number | null>(null);
   const [batchCount,setBatchCount] = useState(1);
   const [batchMode,setBatchMode] = useState<'save'|'smart'|'batch'|'retain'>('save');
-  const [runtimeChoice, setRuntimeChoice] = useState<RuntimeChoice>({ accountId: '', instanceId: '', lifecycle: 'save', retainIdleMinutes: 15 });
+  const [runtimeChoice, setRuntimeChoice] = useState<RuntimeChoice>({ accountId: '', instanceId: '', lifecycle: 'save', retainIdleMinutes: 15, queueMode: 'queue' });
   const [accounts, setAccounts] = useState<GpuAccount[]>([]);
   const [instances, setInstances] = useState<GpuInstance[]>([]);
   const [resourceError, setResourceError] = useState('');
@@ -669,6 +669,7 @@ export default function App() {
           max_runtime_minutes: runtime === 'colab' ? maxRuntime : Math.min(30, runtimeCap),
           allocation: decision.allocation,
           gpu_selection: runtimeChoice.gpuSelection || 'workflow',
+          queue_mode: decision.queueMode,
           account_id: decision.accountId,
           instance_id: decision.instanceId,
           lifecycle: runtimeChoice.lifecycle,

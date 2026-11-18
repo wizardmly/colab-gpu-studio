@@ -14,7 +14,7 @@ import {
   shortGpuName,
 } from '../lib/colab-studio';
 import { formatInstanceTime } from '../lib/instance-time';
-import { instanceIdentity, instanceReusable } from '../lib/instance-submission';
+import { instanceIdentity, instanceQueueable, instanceReusable } from '../lib/instance-submission';
 import { cuNumber, keyId, readableState } from '../lib/ui-helpers';
 import type { RuntimeChoice } from '../pages/CreatePage';
 import type { GpuAccount, GpuInstance } from './AccountDirectory';
@@ -247,7 +247,8 @@ export function ColabRuntimeBar({
                 const id = instanceIdentity(inst);
                 const state = String(inst.state || '').toLowerCase();
                 const reusable = instanceReusable(inst);
-                const pinned = runtimeChoice.instanceId === id;
+                const queueable = instanceQueueable(inst);
+                const pinned = runtimeChoice.instanceId === id && runtimeChoice.queueMode !== 'new_instance';
                 const cutoff = inst.retained_until || inst.idle_deadline_at || inst.hard_deadline_at;
                 const alias = (inst.account_id && accounts.find((a) => a.account_id === inst.account_id)?.alias)
                   || inst.account_alias_snapshot
@@ -264,16 +265,17 @@ export function ColabRuntimeBar({
                       </small>
                     </div>
                     <div className="runtimeMachineBtns">
-                      {reusable && (
+                      {queueable && (
                         <button
                           type="button"
                           className={`button small ${pinned ? '' : 'secondary'}`}
                           onClick={() => updateChoice({
                             accountId: inst.account_id || runtimeChoice.accountId,
                             instanceId: pinned ? null : id,
+                            queueMode: 'queue',
                           })}
                         >
-                          {pinned ? '已锁定复用' : '复用此热机'}
+                          {pinned ? (reusable ? '已锁定复用' : '已锁定接力') : (reusable ? '复用此热机' : '排队接力此机')}
                         </button>
                       )}
                       {state !== 'releasing' && (
@@ -356,6 +358,21 @@ export function ColabRuntimeBar({
                   />
                 </label>
               )}
+
+              <label className="field">
+                <span>并发与排队策略</span>
+                <select
+                  id="topbar-runtime-queue-mode"
+                  value={runtimeChoice.queueMode === 'new_instance' ? 'new_instance' : 'queue'}
+                  onChange={(event) => {
+                    const next = event.target.value === 'new_instance' ? 'new_instance' : 'queue';
+                    updateChoice({ queueMode: next, ...(next === 'new_instance' ? { instanceId: null } : {}) });
+                  }}
+                >
+                  <option value="queue">按机型排队接力热机（默认）</option>
+                  <option value="new_instance">新开机器并行跑</option>
+                </select>
+              </label>
 
               {!runtimeChoice.instanceId && (
                 <label className="field">

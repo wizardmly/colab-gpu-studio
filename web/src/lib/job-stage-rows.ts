@@ -29,10 +29,17 @@ export function jobStageLabel(value: unknown): string {
   return stageLabels.get(key) || key || '阶段未知';
 }
 
-export function jobStateLabel(value: unknown, job?: { awaiting_prep?: boolean }): string {
+export function jobStateLabel(
+  value: unknown,
+  job?: { awaiting_prep?: boolean; queue_gpu?: string | null; queue_state?: string | null },
+): string {
   const raw = String(value ?? '').trim();
   const key = raw.toLowerCase();
-  if (key === 'waiting_for_capacity' && job?.awaiting_prep) return '准备缓存';
+  if (key === 'waiting_for_capacity') {
+    if (job?.awaiting_prep) return '准备缓存';
+    if (job?.queue_gpu) return `排队等 ${job.queue_gpu}`;
+    if (job?.queue_state) return '排队等待';
+  }
   return stateLabels.get(key) || raw || '状态未知';
 }
 

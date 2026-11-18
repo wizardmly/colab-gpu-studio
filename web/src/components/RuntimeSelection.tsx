@@ -1,5 +1,5 @@
 import type { Provider } from '../lib/gpu-api';
-import { instanceIdentity, instanceMachineLabel, instanceReusable } from '../lib/instance-submission';
+import { instanceIdentity, instanceMachineLabel, instanceQueueable, instanceReusable } from '../lib/instance-submission';
 import type { GpuAccount, GpuInstance } from './AccountDirectory';
 import { formatInstanceTime } from '../lib/instance-time';
 import { gpuLabel } from '../lib/gpu-label';
@@ -13,6 +13,7 @@ export interface RuntimeSelectionValue {
   lifecycle: RuntimeLifecycle;
   retainIdleMinutes: number;
   gpuSelection?: 'workflow' | 'auto';
+  queueMode?: 'queue' | 'new_instance';
 }
 
 export interface RuntimeSelectionProps {
@@ -49,15 +50,18 @@ function instanceLabel(instance: GpuInstance): string {
 }
 
 export function RuntimeSelection({ value, accounts, instances, provider, onChange }: RuntimeSelectionProps) {
+  const queueMode = value.queueMode === 'new_instance' ? 'new_instance' : 'queue';
   const selectedAccount = accounts.find((account) => account.account_id === value.accountId);
   const sameAccount = instances.filter((instance) => !value.accountId || instance.account_id === value.accountId);
-  const reusableInstances = sameAccount.filter((instance) => instanceReusable(instance));
-  const staleInstance = value.instanceId ? sameAccount.find((instance) => instanceId(instance) === value.instanceId && !instanceReusable(instance)) : undefined;
-  const candidateInstances = staleInstance ? [...reusableInstances, staleInstance] : reusableInstances;
+  const queueableInstances = sameAccount.filter((instance) => instanceQueueable(instance));
+  const staleInstance = value.instanceId ? sameAccount.find((instance) => instanceId(instance) === value.instanceId && !instanceQueueable(instance)) : undefined;
+  const candidateInstances = staleInstance ? [...queueableInstances, staleInstance] : queueableInstances;
   const selectedInstance = candidateInstances.find((instance) => instanceId(instance) === value.instanceId);
   const hasAccounts = accounts.some(isAccountSelectable);
   const accountReason = !accounts.length ? '尚未加载账号。' : !hasAccounts ? '没有已连接且允许分配的账号；请先在设置中的账号目录完成授权。' : '';
-  const instanceReason = value.instanceId && (!selectedInstance || !instanceReusable(selectedInstance)) ? '所选机器已释放或不能复用。提交前会停下来，不会静默改用其他账号。' : '';
+  const instanceReason = queueMode !== 'new_instance' && value.instanceId && (!selectedInstance || !instanceQueueable(selectedInstance))
+    ? '所选机器已释放或不能复用。提交前会停下来，不会静默改用其他账号。'
+    : '';
 
   function update(patch: Partial<RuntimeSelectionValue>) {
     onChange({ ...value, ...patch });
@@ -84,10 +88,47 @@ export function RuntimeSelection({ value, accounts, instances, provider, onChang
           {accountReason && <span className={styles.selectionHint}>{accountReason}</span>}
         </div>
         <div className={styles.selectionRow}>
+          <label htmlFor="runtime-queue-mode">并发与排队策略
+            <select
+              id="runtime-queue-mode"
+              value={queueMode}
+              onChange={(event) => {
+                const next = event.target.value === 'new_instance' ? 'new_instance' : 'queue';
+                update({ queueMode: next, ...(next === 'new_instance' ? { instanceId: null } : {}) });
+              }}
+            >
+              <option value="queue">按机型串行排队 · 自动接力热机（默认）</option>
+              <option value="new_instance">新开机器并行跑（不等前序任务）</option>
+            </select>
+          </label>
+          <span className={styles.selectionHint}>
+            {queueMode === 'new_instance'
+              ? '当前账号有任务时也会尝试新开一台 VM 并行执行。'
+              : '有同账号或锁定热机在跑时自动停在排队队列，前序完成后立即接力这台机器。'}
+          </span>
+        </div>
+        <div className={styles.selectionRow}>
           <label htmlFor="runtime-instance">机器
-            <select id="runtime-instance" value={value.instanceId || ''} onChange={(event) => update({ instanceId: event.target.value || null })} disabled={(!candidateInstances.length && Boolean(value.accountId))}>
+            <select
+              id="runtime-instance"
+              value={queueMode === 'new_instance' ? '' : (value.instanceId || '')}
+              onChange={(event) => update({ instanceId: event.target.value || null, queueMode: 'queue' })}
+              disabled={queueMode === 'new_instance' || (!candidateInstances.length && Boolean(value.accountId))}
+            >
               <option value="">自动分配兼容机器</option>
-              {candidateInstances.map((instance) => <option key={instanceId(instance)} value={instanceId(instance)} disabled={!instanceReusable(instance)}>{instanceReusable(instance) ? instanceLabel(instance) : `${instanceMachineLabel(instance)} · 不能复用`}</option>)}
+              {candidateInstances.map((instance) => {
+                const qOk = instanceQueueable(instance);
+                const rOk = instanceReusable(instance);
+                return (
+                  <option key={instanceId(instance)} value={instanceId(instance)} disabled={!qOk}>
+                    {!qOk
+                      ? `${instanceMachineLabel(instance)} · 不能复用`
+                      : rOk
+                        ? `${instanceLabel(instance)} · 空闲可立即复用`
+                        : `${instanceLabel(instance)} · 运行中（选定后排队接力）`}
+                  </option>
+                );
+              })}
             </select>
           </label>
           {selectedAccount && <span className={styles.selectionHint}>当前账号：{selectedAccount.alias}。指定机器时不会静默切换到其他账号。</span>}

@@ -80,6 +80,9 @@ export interface GpuJob {
   retained_until?: string | null;
   runtime_deleted?: boolean | null;
   stage?: string | null;
+  queue_state?: string | null;
+  queue_gpu?: string | null;
+  queue_message?: string | null;
   created_at?: string;
   updated_at?: string;
   archived_at?: string | null;

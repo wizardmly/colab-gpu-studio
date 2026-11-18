@@ -3,6 +3,7 @@ export type V020Provider = 'mock' | 'colab';
 export type GpuAllocation = 'auto' | 'existing';
 export type GpuLifecycle = 'save' | 'batch' | 'smart' | 'retain';
 export type RetentionMode = 'save' | 'retain' | 'smart';
+export type QueueMode = 'queue' | 'new_instance';
 
 /** New execution policy fields are optional so legacy job payloads remain readable. */
 export interface GpuExecutionPolicyV020 {
@@ -10,6 +11,7 @@ export interface GpuExecutionPolicyV020 {
   max_runtime_minutes: number;
   allocation?: GpuAllocation;
   gpu_selection?: 'workflow' | 'auto';
+  queue_mode?: QueueMode;
   account_id?: string | null;
   instance_id?: string | null;
   lifecycle?: GpuLifecycle;
@@ -188,4 +190,7 @@ export interface GpuJobSafetyFields {
   runtime_deleted?: boolean | null;
   stage?: string | null;
   actual_units?: number | null;
+  queue_state?: string | null;
+  queue_gpu?: string | null;
+  queue_message?: string | null;
 }

@@ -67,7 +67,7 @@ def _validate_allocation(repo, user, policy: dict) -> dict:
         instance = _resource(repo, "instances", checked["instance_id"], user,
                              "INSTANCE_NOT_FOUND", "指定 GPU 实例不存在或不属于当前用户")
         state = str(instance.get("state", "")).lower()
-        if state in {"released", "deleted", "releasing", "unknown", "cleanup_pending", "quarantined"}:
+        if state in {"released", "deleted", "releasing", "unknown", "cleanup_pending", "quarantined"} or instance.get("manual_stop_requested") or instance.get("runtime_deleted"):
             raise APIError("INSTANCE_UNAVAILABLE", "指定 GPU 实例已释放或当前不可复用", 409)
         instance_account = instance.get("account_id")
         if instance_account and checked.get("account_id") and instance_account != checked["account_id"]:
@@ -80,8 +80,9 @@ def _validate_allocation(repo, user, policy: dict) -> dict:
                 raise APIError("ACCOUNT_UNAVAILABLE", "实例所属账号已停用或未授权", 409)
         if instance.get("provider") and instance["provider"] != checked["provider"]:
             raise APIError("PROVIDER_INVALID", "指定实例与请求 Provider 不匹配", 422)
-        if instance.get("current_job_id") or state in {"busy", "running"}:
-            raise APIError("INSTANCE_BUSY", "指定 GPU 实例当前正在执行其他任务", 409)
+        if instance.get("current_job_id") or state in {"busy", "running", "allocating", "preparing", "loading"}:
+            if checked.get("queue_mode") == "new_instance":
+                raise APIError("INSTANCE_BUSY", "新开机器模式下不能锁定正在运行的实例", 409)
 
     # Automatic account selection is only allowed to inspect eligible accounts;
     # it must never silently fail over from one identity to another.

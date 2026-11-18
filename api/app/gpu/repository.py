@@ -564,14 +564,42 @@ class Repository:
                 row.updated_at=utcnow()
             return True
 
-    def handoff_lease(self, owner_id, job_id, next_job_id, lease_id, now):
+    def handoff_lease(
+        self,
+        owner_id,
+        job_id,
+        next_job_id,
+        lease_id,
+        now,
+        *,
+        allow_spec_handoff: bool = False,
+        next_deadline_epoch: float | None = None,
+    ):
         """Transfer a lease under the same admission fence as allocation/bind."""
         with self.store.admission_lock(timeout=1.0) as acquired:
             if not acquired:
                 return False
-            return self._handoff_lease_locked(owner_id, job_id, next_job_id, lease_id, now)
+            return self._handoff_lease_locked(
+                owner_id,
+                job_id,
+                next_job_id,
+                lease_id,
+                now,
+                allow_spec_handoff=allow_spec_handoff,
+                next_deadline_epoch=next_deadline_epoch,
+            )
 
-    def _handoff_lease_locked(self, owner_id, job_id, next_job_id, lease_id, now):
+    def _handoff_lease_locked(
+        self,
+        owner_id,
+        job_id,
+        next_job_id,
+        lease_id,
+        now,
+        *,
+        allow_spec_handoff: bool = False,
+        next_deadline_epoch: float | None = None,
+    ):
         """Finish old job and transfer exclusive lease ownership in one DB transaction."""
         with self.store.db_lock(), self.store.Session.begin() as session:
             job=session.get(GpuJobRow,job_id)
@@ -637,11 +665,39 @@ class Repository:
                     return False
                 if instance.state in {'deleted', 'unknown', 'releasing', 'cleanup_pending', 'quarantined'}:
                     return False
-            if (job.data.get('compatibility_signature')!=following.data.get('compatibility_signature')
-                    or not job.data.get('compatibility_signature')
-                    or lease.state not in {'active','busy'}
-                    or now>=float(lease.data.get('deadline_epoch') or 0)):
+            target_account = account_id if instance is not None else lease_account
+            following_req_acct = (following.data or {}).get('requested_account_id') or ((following.data or {}).get('execution_policy') or {}).get('account_id')
+            if following_req_acct not in {None, '', target_account}:
                 return False
+            following_req_inst = (following.data or {}).get('requested_instance_id') or ((following.data or {}).get('execution_policy') or {}).get('instance_id')
+            if following_req_inst and (instance is None or following_req_inst != instance.id):
+                return False
+            if lease.state not in {'active', 'busy'} or now >= float(lease.data.get('deadline_epoch') or 0):
+                return False
+            if allow_spec_handoff:
+                job_provider = (job.data or {}).get('provider') or ((job.data or {}).get('execution_policy') or {}).get('provider') or 'mock'
+                next_provider = (following.data or {}).get('provider') or ((following.data or {}).get('execution_policy') or {}).get('provider') or 'mock'
+                if job_provider != next_provider:
+                    return False
+                next_snap = (following.data or {}).get('snapshot') or {}
+                if (following.data or {}).get('prep') or next_snap.get('prep') or next_snap.get('system_smoke'):
+                    return False
+                if instance is not None and (instance_data.get('manual_stop_requested') or instance_data.get('runtime_deleted')):
+                    return False
+                if ((following.data or {}).get('execution_policy') or {}).get('queue_mode') == 'new_instance':
+                    return False
+            elif (job.data.get('compatibility_signature') != following.data.get('compatibility_signature')
+                    or not job.data.get('compatibility_signature')):
+                return False
+            hard_deadline = instance_data.get('hard_deadline_at') if instance is not None else None
+            hard_source = instance_data.get('hard_deadline_source') if instance is not None else None
+            fixed_hard = hard_deadline if (hard_deadline is not None and hard_source != 'lease_deadline') else None
+            if fixed_hard is not None and now >= float(fixed_hard):
+                return False
+            new_deadline = lease.data.get('deadline_epoch')
+            if next_deadline_epoch is not None:
+                target_deadline = min(float(next_deadline_epoch), float(fixed_hard)) if fixed_hard is not None else float(next_deadline_epoch)
+                new_deadline = max(float(new_deadline or 0), target_deadline)
             execution_id = job.data.get('execution_id')
             execution=session.get(GpuExecutionRow, execution_id) if execution_id else None
             next_execution_id = following.data.get('execution_id')
@@ -671,15 +727,32 @@ class Repository:
             if instance is not None:
                 job.instance_id = instance.id
                 job.account_id = account_id
-            following.data={**following.data,'lease_id':lease_id,
-                            'deadline_epoch':lease.data['deadline_epoch'],
-                            **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {})}
+            following_patch = {
+                **following.data,
+                'lease_id': lease_id,
+                'deadline_epoch': new_deadline,
+                'queue_state': None,
+                'queue_gpu': None,
+                'queue_message': None,
+                **({'instance_id': instance.id, 'account_id': account_id} if instance is not None else {}),
+            }
+            if instance is not None:
+                alias_snapshot = (following.data or {}).get('account_alias_snapshot') or instance_data.get('account_alias_snapshot') or (job.data or {}).get('account_alias_snapshot')
+                if alias_snapshot and not following_patch.get('account_alias_snapshot'):
+                    following_patch['account_alias_snapshot'] = alias_snapshot
+                drive_acct = (following.data or {}).get('drive_account_id') or instance_data.get('drive_account_id') or (job.data or {}).get('drive_account_id')
+                if drive_acct and not following_patch.get('drive_account_id'):
+                    following_patch['drive_account_id'] = drive_acct
+                if fixed_hard is not None or hard_source == 'lease_deadline':
+                    following_patch['hard_deadline_at'] = new_deadline if hard_source == 'lease_deadline' else fixed_hard
+            following.data = following_patch
             if instance is not None:
                 following.instance_id = instance.id
                 following.account_id = account_id
             handle=lease.data.get('handle')
             # Handle ownership must follow the lease owner for every provider (real ones verify it).
             lease.data={**lease.data,'owner_job_id':next_job_id,'current_job_id':next_job_id,
+                        'deadline_epoch':new_deadline,
                         'last_active_at':now,'state':'active',
                         **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {}),
                         **({'handle':retarget_handle(handle,next_job_id)} if isinstance(handle,dict) else {})}
@@ -687,8 +760,26 @@ class Repository:
             if instance is not None:
                 lease.instance_id = instance.id
                 lease.account_id = account_id
-                instance_data.update(current_job_id=next_job_id, instance_id=instance.id, account_id=account_id,
-                                     lease_id=lease_id, last_seen_at=now, runtime_deleted=False, state='allocating')
+                old_job_policy = (job.data or {}).get('execution_policy') or {}
+                old_job_lifecycle = old_job_policy.get('lifecycle') or (job.data or {}).get('lifecycle') or 'save'
+                explicit_override = bool(instance_data.get('retention_overridden')) or (
+                    instance_data.get('retention_mode') in {'retain', 'smart'} and old_job_lifecycle == 'save'
+                )
+                next_policy = (following.data or {}).get('execution_policy') or {}
+                next_lifecycle = next_policy.get('lifecycle') or (following.data or {}).get('lifecycle') or 'save'
+                instance_data.update(
+                    current_job_id=next_job_id,
+                    instance_id=instance.id,
+                    account_id=account_id,
+                    lease_id=lease_id,
+                    last_seen_at=now,
+                    runtime_deleted=False,
+                    state='allocating',
+                    budget_reserved=float((following.data or {}).get('budget_reserved') or instance_data.get('budget_reserved') or 0.0),
+                    **({} if explicit_override else {'retention_mode': next_lifecycle}),
+                    **({'compatibility_signature': following.data['compatibility_signature']} if following.data.get('compatibility_signature') else {}),
+                    **({'hard_deadline_at': new_deadline} if hard_source == 'lease_deadline' else {}),
+                )
                 instance.data = instance_data
                 instance.current_job_id = next_job_id
                 instance.account_id = account_id
@@ -723,6 +814,8 @@ class Repository:
                 instance.updated_at=utcnow()
             if job.data.get('batch_id'):
                 self._refresh_batch(session,job.data['batch_id'],owner_id)
+            if following.data.get('batch_id') and following.data.get('batch_id') != job.data.get('batch_id'):
+                self._refresh_batch(session,following.data['batch_id'],owner_id)
             return True
 
     @staticmethod
@@ -1242,6 +1335,7 @@ class Repository:
                 'poll_last_error','runtime_logs',
                 'gpu_reported','gpu_diagnostics',
                 'archived_at','poll_next_at','mcp_poll_interval','mcp_rate_limited',
+                'queue_state','queue_gpu','queue_message',
             }
             for k in transient:
                 data.pop(k,None)
@@ -1298,6 +1392,7 @@ class Repository:
                 "attempt_id", "runtime_id", "request_id", "stage", "worker_timings", "output_bytes",
                 "started_at", "finished_at", "poll_retry_count", "poll_retry_at", "gpu_reported", "gpu_diagnostics",
                 "poll_last_error", "runtime_logs", "poll_next_at", "mcp_poll_interval", "mcp_rate_limited",
+                "queue_state", "queue_gpu", "queue_message",
             }
             for k in transient:
                 data.pop(k, None)

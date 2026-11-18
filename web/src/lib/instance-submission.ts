@@ -1,6 +1,7 @@
 export type InstanceChoice = {
   accountId?: string | null;
   instanceId?: string | null;
+  queueMode?: 'queue' | 'new_instance';
 };
 
 export type InstanceSnapshot = {
@@ -12,6 +13,8 @@ export type InstanceSnapshot = {
   instance_label?: string | null;
   label?: string | null;
   gpu_reported?: string | null;
+  manual_stop_requested?: boolean;
+  runtime_deleted?: boolean;
 };
 
 export type SubmissionDecision = {
@@ -19,11 +22,13 @@ export type SubmissionDecision = {
   allocation: 'auto' | 'existing';
   accountId: string | null;
   instanceId: string | null;
+  queueMode: 'queue' | 'new_instance';
   message: string;
   machineLabel: string;
 };
 
 const REUSABLE = new Set(['ready', 'retained_idle']);
+const QUEUEABLE = new Set(['requested', 'allocating', 'preparing', 'loading', 'ready', 'busy', 'running', 'retained_idle']);
 
 export function instanceIdentity(instance: InstanceSnapshot): string {
   return instance.id || instance.instance_id || '';
@@ -37,6 +42,13 @@ export function instanceReusable(instance: InstanceSnapshot | null | undefined):
   return true;
 }
 
+export function instanceQueueable(instance: InstanceSnapshot | null | undefined): boolean {
+  if (!instance) return false;
+  if (instance.manual_stop_requested || instance.runtime_deleted) return false;
+  const state = String(instance.state || '').toLowerCase();
+  return QUEUEABLE.has(state);
+}
+
 export function instanceMachineLabel(instance: InstanceSnapshot | null | undefined): string {
   if (!instance) return '未选择';
   const name = instance.instance_label || instance.label || instanceIdentity(instance).slice(0, 8) || '机器';
@@ -47,11 +59,23 @@ export function instanceMachineLabel(instance: InstanceSnapshot | null | undefin
 
 /**
  * A stale or released machine must not be submitted, and must not be silently
- * replaced by another account. The caller keeps the current account and asks
- * the user to confirm automatic allocation on a later click.
+ * replaced by another account. A live busy machine may be locked for serial
+ * queue handoff unless the user explicitly requested a new machine.
  */
 export function resolveInstanceSubmission(choice: InstanceChoice, instances: InstanceSnapshot[]): SubmissionDecision {
   const accountId = choice.accountId || null;
+  const queueMode: 'queue' | 'new_instance' = choice.queueMode === 'new_instance' ? 'new_instance' : 'queue';
+  if (queueMode === 'new_instance') {
+    return {
+      ok: true,
+      allocation: 'auto',
+      accountId,
+      instanceId: null,
+      queueMode,
+      message: '',
+      machineLabel: '新开机器',
+    };
+  }
   const instanceId = choice.instanceId || null;
   if (!instanceId) {
     return {
@@ -59,12 +83,13 @@ export function resolveInstanceSubmission(choice: InstanceChoice, instances: Ins
       allocation: 'auto',
       accountId,
       instanceId: null,
+      queueMode,
       message: '',
       machineLabel: '自动分配',
     };
   }
   const selected = instances.find((instance) => instanceIdentity(instance) === instanceId) || null;
-  if (instanceReusable(selected) && selected) {
+  if (instanceQueueable(selected) && selected) {
     const owner = selected.account_id || null;
     if (accountId && owner && accountId !== owner) {
       return {
@@ -72,6 +97,7 @@ export function resolveInstanceSubmission(choice: InstanceChoice, instances: Ins
         allocation: 'auto',
         accountId,
         instanceId: null,
+        queueMode,
         machineLabel: instanceMachineLabel(selected),
         message: '所选机器不属于当前账号。这次没有提交任务，也没有改用其他账号。请改选这台机器对应的账号，或清空机器后重新确认。',
       };
@@ -81,6 +107,7 @@ export function resolveInstanceSubmission(choice: InstanceChoice, instances: Ins
       allocation: 'existing',
       accountId: accountId || owner,
       instanceId,
+      queueMode,
       message: '',
       machineLabel: instanceMachineLabel(selected),
     };
@@ -91,6 +118,7 @@ export function resolveInstanceSubmission(choice: InstanceChoice, instances: Ins
     allocation: 'auto',
     accountId: keptAccount,
     instanceId: null,
+    queueMode,
     machineLabel: selected ? instanceMachineLabel(selected) : '已失效的机器',
     message: keptAccount
       ? '所选 GPU 机器已释放或不能复用。这次没有提交任务，也没有换账号。请再点一次确认，按当前账号自动分配机器，或另选一台可用机器。'

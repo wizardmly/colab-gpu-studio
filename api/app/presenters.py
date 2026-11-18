@@ -66,6 +66,9 @@ def public_job(job, *, include_runtime_logs=False):
         "poll_retry_count",
         "mcp_rate_limited",
         "poll_retry_at",
+        "queue_state",
+        "queue_gpu",
+        "queue_message",
     }
     result = {k: v for k, v in job.items() if k in keys}
     if include_runtime_logs:

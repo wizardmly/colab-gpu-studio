@@ -226,16 +226,25 @@ export function CreatePanel({
     [runtime, settings, accounts, instances, runtimeChoice],
   );
   const realAvailable = Boolean(settings?.real_enabled) && settings?.offline_mode !== true;
-  const pinnedReusable = runtimeChoice.instanceId
+  const effectiveQueueMode = runtimeChoice.queueMode === 'new_instance' ? 'new_instance' : 'queue';
+  const pinnedReusable = runtimeChoice.instanceId && effectiveQueueMode !== 'new_instance'
     ? summary.reusableInstances.find((item) => instanceIdentity(item) === runtimeChoice.instanceId) || null
+    : null;
+  const pinnedInstance = runtimeChoice.instanceId && effectiveQueueMode !== 'new_instance'
+    ? summary.liveInstances.find((item) => instanceIdentity(item) === runtimeChoice.instanceId) || null
     : null;
   const warmInstance = summary.primaryInstance && instanceReusable(summary.primaryInstance)
     ? summary.primaryInstance
     : null;
+  const workflowGpu = specBadgeText(manifest ?? activeWorkflow?.manifest) || 'GPU';
 
   const activeJobs = useMemo(
     () => jobs.filter((job) => !job.archived_at && !terminalStates.has(String(job.state || 'queued').toLowerCase())),
     [jobs],
+  );
+  const activeUserJobs = useMemo(
+    () => activeJobs.filter((job) => !job.prep),
+    [activeJobs],
   );
 
   const latestFailedJob = useMemo(() => {
@@ -262,7 +271,15 @@ export function CreatePanel({
   const summaryLine = runtime === 'mock'
     ? '离线模拟 · 不连接 Colab、不扣 CU'
     : summary.usableAccounts.length > 0
-      ? `Colab GPU · ${activeAccountAlias} · ${pinnedReusable ? `复用热机 ${shortGpuName(pinnedReusable)}` : '自动分配 GPU'} · ${LIFECYCLE_SHORT[runtimeChoice.lifecycle]}`
+      ? `Colab GPU · ${activeAccountAlias} · ${
+        effectiveQueueMode === 'new_instance'
+          ? '新开机器并行'
+          : pinnedReusable
+            ? `复用热机 ${shortGpuName(pinnedReusable)}`
+            : pinnedInstance
+              ? `排队接力 ${shortGpuName(pinnedInstance)}`
+              : '自动分配 GPU'
+      } · ${LIFECYCLE_SHORT[runtimeChoice.lifecycle]}`
       : '需先完成 Google 账号授权或开启算力分配';
 
   if (!projectId) {
@@ -470,9 +487,11 @@ export function CreatePanel({
               <span>
                 {activeLeadJob?.awaiting_prep
                   ? '等待共享缓存准备完成'
-                  : activeLeadJob?.stage
-                    ? jobStageLabel(activeLeadJob.stage)
-                    : '正在排队或恢复运行时…'}
+                  : String(activeLeadJob?.state || '').toLowerCase() === 'waiting_for_capacity' && activeLeadJob?.queue_message
+                    ? activeLeadJob.queue_message
+                    : activeLeadJob?.stage
+                      ? jobStageLabel(activeLeadJob.stage)
+                      : '正在排队或恢复运行时…'}
                 {activeLeadPct !== null ? ` · ${activeLeadPct}%` : ''}
               </span>
             </span>
@@ -735,6 +754,31 @@ export function CreatePanel({
               )}
             </div>
           )}
+          {activeUserJobs.length > 0 && (
+            <div className={styles.queueModeRow} role="group" aria-label="排队与开新机策略">
+              <span className="muted small">已有 {activeUserJobs.length} 个任务在跑：</span>
+              <div className={styles.optionChips}>
+                <button
+                  type="button"
+                  className={styles.optionChip}
+                  data-active={effectiveQueueMode === 'queue'}
+                  aria-pressed={effectiveQueueMode === 'queue'}
+                  onClick={() => onRuntimeChoiceChange({ ...runtimeChoice, queueMode: 'queue' })}
+                >
+                  {runtime === 'colab' ? `按 ${workflowGpu} 排队接力` : '串行排队等待'}
+                </button>
+                <button
+                  type="button"
+                  className={styles.optionChip}
+                  data-active={effectiveQueueMode === 'new_instance'}
+                  aria-pressed={effectiveQueueMode === 'new_instance'}
+                  onClick={() => onRuntimeChoiceChange({ ...runtimeChoice, queueMode: 'new_instance', instanceId: null })}
+                >
+                  新开机器并行跑
+                </button>
+              </div>
+            </div>
+          )}
           {error && <p className="status error small" role="alert">{error}</p>}
           <button
             className="button big block"
@@ -743,7 +787,15 @@ export function CreatePanel({
             onClick={onSubmit}
           >
             <Sparkles size={18} strokeWidth={1.8} aria-hidden />
-            {loading === 'submit' ? '正在派发到 Colab…' : '立即生成'}
+            {loading === 'submit'
+              ? '正在派发到 Colab…'
+              : activeUserJobs.length > 0
+                ? (effectiveQueueMode === 'new_instance'
+                  ? '新开机器并行生成'
+                  : runtime === 'colab'
+                    ? `加入 ${workflowGpu} 排队（自动接力热机）`
+                    : '加入排队生成')
+                : '立即生成'}
           </button>
         </div>
         </div>

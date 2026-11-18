@@ -659,3 +659,4 @@
 .notice { padding: 10px 12px; border: 1px solid var(--line); }
 .errorText { font-size: 13px; color: #a63b32; }
 .checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.queueModeRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding-top: 2px; }

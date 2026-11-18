@@ -15,6 +15,7 @@ _NEW_POLICY_FIELDS = {
     "lifecycle",
     "retain_idle_minutes",
     "gpu_selection",
+    "queue_mode",
 }
 
 
@@ -42,6 +43,7 @@ class Policy(BaseModel):
     lifecycle: Literal["save", "batch", "smart", "retain"] | None = None
     retain_idle_minutes: int = Field(default=15, ge=1, le=30)
     gpu_selection: Literal["workflow", "auto"] = "workflow"
+    queue_mode: Literal["queue", "new_instance"] = "queue"
 
     @field_validator("account_id", "instance_id")
     @classmethod
@@ -92,8 +94,13 @@ def normalize_policy(policy: Policy | dict) -> dict:
     parsed = policy if isinstance(policy, Policy) else Policy.model_validate(policy)
     data = parsed.model_dump()
     lifecycle = parsed.lifecycle if parsed.lifecycle is not None else _legacy_lifecycle(parsed)
+    allocation = "existing" if parsed.instance_id is not None else parsed.allocation
+    if "queue_mode" in parsed.model_fields_set:
+        data["queue_mode"] = parsed.queue_mode
+        if parsed.queue_mode == "new_instance" and parsed.instance_id is None:
+            allocation = "auto"
     data.update(
-        allocation="existing" if parsed.instance_id is not None else parsed.allocation,
+        allocation=allocation,
         account_id=parsed.account_id,
         instance_id=parsed.instance_id,
         lifecycle=lifecycle,

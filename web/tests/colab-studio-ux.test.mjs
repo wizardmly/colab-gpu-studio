@@ -466,3 +466,113 @@ test('SettingsPanel SSR renders 5 secondary menu items and usage/resources panel
     else delete globalThis.window;
   }
 });
+
+test('resolveInstanceSubmission queues behind live busy instances and respects new_instance override', async () => {
+  const { resolveInstanceSubmission } = await loadSsrExports(
+    `export { resolveInstanceSubmission } from './src/lib/instance-submission.ts';`,
+    'instance-submission-entry.ts',
+  );
+  const { jobStateLabel } = await loadSsrExports(
+    `export { jobStateLabel } from './src/lib/job-stage-rows.ts';`,
+    'job-stage-rows-entry.ts',
+  );
+
+  const instances = [
+    { id: 'inst-busy', state: 'busy', account_id: 'acct-1', current_job_id: 'job-1', instance_label: 'L4 热机' },
+    { id: 'inst-dead', state: 'released', account_id: 'acct-1', instance_label: '已释放' },
+  ];
+
+  const queueOnBusy = resolveInstanceSubmission({ accountId: 'acct-1', instanceId: 'inst-busy', queueMode: 'queue' }, instances);
+  assert.equal(queueOnBusy.ok, true);
+  assert.equal(queueOnBusy.allocation, 'existing');
+  assert.equal(queueOnBusy.instanceId, 'inst-busy');
+  assert.equal(queueOnBusy.queueMode, 'queue');
+
+  const openNew = resolveInstanceSubmission({ accountId: 'acct-1', instanceId: 'inst-busy', queueMode: 'new_instance' }, instances);
+  assert.equal(openNew.ok, true);
+  assert.equal(openNew.allocation, 'auto');
+  assert.equal(openNew.instanceId, null);
+  assert.equal(openNew.queueMode, 'new_instance');
+
+  const blockedDead = resolveInstanceSubmission({ accountId: 'acct-1', instanceId: 'inst-dead', queueMode: 'queue' }, instances);
+  assert.equal(blockedDead.ok, false);
+  assert.equal(blockedDead.instanceId, null);
+
+  assert.equal(jobStateLabel('waiting_for_capacity', { queue_gpu: 'L4' }), '排队等 L4');
+  assert.equal(jobStateLabel('waiting_for_capacity', { awaiting_prep: true, queue_gpu: 'L4' }), '准备缓存');
+  assert.equal(jobStateLabel('waiting_for_capacity'), '等待算力');
+});
+
+test('CreatePanel SSR renders spec-aware queue toggle and button label when tasks are running', async () => {
+  const React = requireFromWeb('react');
+  const { renderToStaticMarkup } = requireFromWeb('react-dom/server');
+  const { CreatePanel } = await loadSsrExports(
+    `export { CreatePanel } from './src/pages/CreatePage.tsx';`,
+    'create-panel-queue-ssr-entry.ts',
+  );
+
+  const l4Manifest = {
+    model_id: 'minimax-h3',
+    title: 'MiniMax H3',
+    max_runtime_minutes: 60,
+    compute_spec: { accelerator: 'L4' },
+    parameters: [{ key: 'prompt', label: '提示词', type: 'text', default: '' }],
+  };
+  const l4Workflow = {
+    id: 'wf-l4',
+    workflow_key: 'minimax-h3-ref2v',
+    workflow_version: '1.4.0',
+    model_id: 'minimax-h3',
+    state: 'active',
+    active: true,
+    title: 'MiniMax H3',
+    manifest: l4Manifest,
+  };
+  const noop = () => {};
+  const html = renderToStaticMarkup(React.createElement(CreatePanel, {
+    projectId: 'proj-1',
+    models: [{ model_id: 'minimax-h3', display_name: 'MiniMax H3', enabled: true }],
+    workflows: [l4Workflow],
+    presets: [],
+    settings: realSettings,
+    manifest: l4Manifest,
+    params: { prompt: 'hello' },
+    setParams: noop,
+    gallery: [],
+    outputs: [],
+    jobs: [{ id: 'job-running', state: 'running', workflow_key: 'minimax-h3-ref2v' }],
+    highlightedJobId: null,
+    selectedAssets: [],
+    setSelectedAssets: noop,
+    uploadProgress: {},
+    onUpload: async () => null,
+    modelId: 'minimax-h3',
+    setModelId: noop,
+    workflowId: 'wf-l4',
+    setWorkflowId: noop,
+    runtime: 'colab',
+    setRuntime: noop,
+    maxRuntime: 60,
+    setMaxRuntime: noop,
+    runtimeCap: 60,
+    runtimeError: '',
+    timeoutRisk: '',
+    batchCount: 1,
+    setBatchCount: noop,
+    batchMode: 'save',
+    setBatchMode: noop,
+    runtimeChoice: { lifecycle: 'save', retainIdleMinutes: 15, accountId: null, instanceId: null, queueMode: 'queue' },
+    accounts: [usableAccount],
+    instances: [],
+    onRuntimeChoiceChange: noop,
+    loading: '',
+    error: '',
+    onSubmit: noop,
+    onApplyPreset: noop,
+    onSavePreset: noop,
+  }));
+
+  assert.match(html, /按 L4 排队接力/);
+  assert.match(html, /新开机器并行跑/);
+  assert.match(html, /加入 L4 排队（自动接力热机）/);
+});

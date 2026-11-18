@@ -345,6 +345,12 @@ class InstanceService:
     def _choose_account(self, session, accounts, owner_id, project_id):
         if len(accounts) == 1:
             return accounts[0]
+        active_account_ids = {
+            self._value(self._data(r), "account_id")
+            for r in self._rows(session, "instances", owner_id)
+            if r.state in {"requested", "allocating", "ready", "busy", "releasing", "cleanup_pending"}
+        }
+        pool = [a for a in accounts if self._account_id(a) not in active_account_ids] or accounts
         model = self._model("allocation_cursors")
         cursor_id = self._cursor_id(owner_id, project_id)
         cursor = session.scalar(select(model).where(model.id == cursor_id))
@@ -354,11 +360,27 @@ class InstanceService:
             session.add(cursor)
             session.flush()
         data = self._data(cursor)
-        index = int(data.get("next_index", 0)) % len(accounts)
-        selected = accounts[index]
-        data.update(next_index=(index + 1) % len(accounts), last_account_id=self._account_id(selected))
+        index = int(data.get("next_index", 0)) % len(pool)
+        selected = pool[index]
+        data.update(next_index=(index + 1) % len(pool), last_account_id=self._account_id(selected))
         self._set(cursor, data, state="active", session=session)
         return selected
+
+    @staticmethod
+    def _spec_satisfies(actual_key: Mapping, requested_key: Mapping) -> bool:
+        actual_variant = str(actual_key.get("variant") or "").upper()
+        req_variant = str(requested_key.get("variant") or "").upper()
+        actual_accel = str(actual_key.get("accelerator") or "").upper()
+        req_accel = str(requested_key.get("accelerator") or "").upper()
+        if actual_variant != req_variant or actual_accel != req_accel:
+            return False
+        actual_shape = str(actual_key.get("shape") or "SHAPE_STANDARD").upper()
+        req_shape = str(requested_key.get("shape") or "SHAPE_STANDARD").upper()
+        if req_shape == "SHAPE_HIGHMEM":
+            return actual_shape == "SHAPE_HIGHMEM"
+        if actual_shape in {"SHAPE_STANDARD", "SHAPE_HIGHMEM"} and req_shape == "SHAPE_STANDARD":
+            return True
+        return actual_shape == req_shape
 
     def _compatible(self, instance, job, account_id, session):
         data = self._data(instance)
@@ -383,7 +405,10 @@ class InstanceService:
                 actual = self._data(lease).get("selected_spec")
             requested_key = requested.get("key", requested) if isinstance(requested, Mapping) else requested
             actual_key = actual.get("key", actual) if isinstance(actual, Mapping) else actual
-            if requested_key != actual_key:
+            if isinstance(requested_key, Mapping) and isinstance(actual_key, Mapping):
+                if not self._spec_satisfies(actual_key, requested_key):
+                    return False
+            elif requested_key != actual_key:
                 return False
         signature = job.get("compatibility_signature")
         return not signature or data.get("compatibility_signature") == signature
@@ -407,10 +432,19 @@ class InstanceService:
         model = self._model("instances")
         now = self._utcnow()
         policy = self._job_policy(job)
+        effective_spec = (
+            job.get("requested_spec")
+            or policy.get("requested_spec")
+            or (
+                None
+                if policy.get("gpu_selection") == "auto"
+                else ((job.get("snapshot") or {}).get("manifest") or {}).get("compute_spec")
+            )
+        )
         payload = {
             "account_id": self._account_id(account), "provider": self._provider(job), "current_job_id": job["id"],
             "allocation_key": key, "compatibility_signature": job.get("compatibility_signature"),
-            "runtime_spec_requested": job.get("requested_spec") or policy.get("requested_spec"),
+            "runtime_spec_requested": effective_spec,
             "retention_mode": job.get("lifecycle") or policy.get("lifecycle") or "save",
             "selection_reason": reason, "budget_reserved": units, "retention_reserved": 0.0,
             "allocation_requested_at": self.clock(), "generation": 0,
@@ -418,6 +452,7 @@ class InstanceService:
         }
         if job.get("hard_deadline_at") is not None:
             payload["hard_deadline_at"] = float(job["hard_deadline_at"])
+            payload["hard_deadline_source"] = "explicit"
         row = model(id=stable_id, owner_id=job["owner_id"], project_id=job.get("project_id"), state="allocating", data=payload, version=0, created_at=now, updated_at=now)
         session.add(row)
         try:
@@ -496,8 +531,14 @@ class InstanceService:
                 units = self._reserve_budget(session, job, account, provider)
                 return self._claim_existing(session, instance, job, account, key, stable_id, "requested_instance", units)
 
-            # Reuse is deliberately attempted before advancing the persistent RR cursor.
-            idle = [r for r in self._rows(session, "instances", owner_id) if r.id != stable_id and r.state not in {"unknown", "cleanup_pending"}]
+            # Reuse is deliberately attempted before advancing the persistent RR cursor,
+            # unless the caller explicitly requested opening a fresh instance.
+            queue_mode = self._job_policy(job).get("queue_mode")
+            idle = (
+                []
+                if queue_mode == "new_instance"
+                else [r for r in self._rows(session, "instances", owner_id) if r.id != stable_id and r.state not in {"unknown", "cleanup_pending"}]
+            )
             if requested_account:
                 account = accounts[0]
                 candidates = [r for r in idle if self._compatible(r, job, self._account_id(account), session)]
@@ -600,11 +641,19 @@ class InstanceService:
                 raise InstanceConflict("实例已被清理流程围栏")
             if data.get("current_job_id") not in {None, job.get("id")}:
                 raise InstanceConflict("instance is owned by another job")
-            deadline = lease_data.get("hard_deadline_at") or lease_data.get("deadline_epoch")
+            explicit_hard = lease_data.get("hard_deadline_at") or job.get("hard_deadline_at")
+            deadline = explicit_hard or lease_data.get("deadline_epoch")
             current = data.get("hard_deadline_at")
             if deadline is not None:
                 deadline = float(deadline)
-                data["hard_deadline_at"] = min(float(current), deadline) if current is not None else deadline
+                if explicit_hard is not None:
+                    data["hard_deadline_at"] = min(float(current), deadline) if current is not None else deadline
+                    data["hard_deadline_source"] = "explicit"
+                elif current is None or data.get("hard_deadline_source") == "lease_deadline":
+                    data["hard_deadline_at"] = deadline
+                    data["hard_deadline_source"] = "lease_deadline"
+                else:
+                    data["hard_deadline_at"] = min(float(current), deadline)
             data.update(lease_id=lease_id, current_job_id=job.get("id"), last_seen_at=self.clock())
             self._set(instance, data, state=instance.state, session=session)
             account = self._account_row(session, data.get("account_id"), instance.owner_id)
@@ -688,12 +737,13 @@ class InstanceService:
                 deadline = self.clock() + minutes * 60
                 data["idle_deadline_at"] = min(deadline, float(hard)) if hard is not None else deadline
                 data["retention_mode"] = mode
+                data["retention_overridden"] = True
                 # Retention is an explicit lifecycle transition.  The
                 # scheduler may still finish the current job afterwards, but
                 # the durable instance policy is already retained_idle.
                 state = "retained_idle"
             else:
-                data.update(retention_mode="save", idle_deadline_at=None, retention_reserved=0.0)
+                data.update(retention_mode="save", retention_overridden=False, idle_deadline_at=None, retention_reserved=0.0)
                 state = "releasing" if data.get("current_job_id") is None else instance.state
             self._set(instance, data, state=state, session=session)
             result = self.public(self._dict(instance))

@@ -55,8 +55,9 @@ def build_batch_router(JobInput, admit_job, public_job):
                 raise APIError("POLICY_INVALID", "同一批次的生命周期策略必须一致")
         account_ids = {policy.get("account_id") for policy in normalized}
         instance_ids = {policy.get("instance_id") for policy in normalized}
-        if len(account_ids) > 1 or len(instance_ids) > 1:
-            raise APIError("POLICY_INVALID", "同一批次必须使用一致的账号与实例")
+        queue_modes = {policy.get("queue_mode") for policy in normalized if "queue_mode" in policy}
+        if len(account_ids) > 1 or len(instance_ids) > 1 or len(queue_modes) > 1:
+            raise APIError("POLICY_INVALID", "同一批次必须使用一致的账号、实例与排队策略")
         if lifecycle in {"smart", "retain"}:
             retain_minutes = {policy["retain_idle_minutes"] for policy in normalized}
             if len(retain_minutes) > 1:

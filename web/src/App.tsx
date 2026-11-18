@@ -16,9 +16,10 @@ import {
 } from './lib/gpu-api';
 import type { GpuAccount, GpuInstance } from './components/AccountDirectory';
 import { ColabRuntimeBar } from './components/ColabRuntimeBar';
+import { splitParams } from './components/GpuParamForm';
 import { referenceAssets, supportsReferences } from './components/ReferencePicker';
 import { resolveGpuCheckRequest } from './lib/colab-check';
-import { isAccountBudgetMissing, parseOAuthReturnLocation, resolveDefaultProvider } from './lib/colab-studio';
+import { isAccountBudgetMissing, parseOAuthReturnLocation, resolveDefaultMaxRuntime, resolveDefaultProvider } from './lib/colab-studio';
 import { jobStateLabel } from './lib/job-stage-rows';
 import { jobDetailTimings, paramRows, stageSecondsTotal, taskStatusNote } from './lib/job-detail-copy';
 import { resolveInstanceSubmission } from './lib/instance-submission';
@@ -290,7 +291,10 @@ export default function App() {
   const activeWorkflow = workflows.find((item) => item.id === workflowId);
   const configuredRuntimeCap = settings?.budget?.max_runtime_minutes;
   const runtimeCap = typeof configuredRuntimeCap === 'number' ? Math.min(configuredRuntimeCap, 1440) : 30;
-  const maxRuntime = requestedRuntime ?? Math.min(30, runtimeCap);
+  const maxRuntime = requestedRuntime ?? resolveDefaultMaxRuntime(
+    manifest?.max_runtime_minutes ?? activeWorkflow?.manifest?.max_runtime_minutes,
+    runtimeCap,
+  );
   const runtimeError = runtime === 'colab' && (!Number.isInteger(maxRuntime) || maxRuntime < 1 || maxRuntime > runtimeCap)
     ? `请输入 1 到 ${runtimeCap} 分钟，实际运行受服务器上限约束。` : '';
   const previousTimeout = runtime === 'colab' && activeWorkflow && jobs.find((job) => {
@@ -438,6 +442,9 @@ export default function App() {
       writeWorkflowDraft(previous.projectId, previous.workflowId, paramsRef.current);
     }
     const carried = sameProject && previous.workflowId && previous.workflowId !== workflowId ? carriedDraft(paramsRef.current) : null;
+    if (previous.workflowId && previous.workflowId !== workflowId && !incomingDraft.current) {
+      setMaxRuntime(null);
+    }
     draftLocation.current = { projectId, workflowId };
     let alive = true;
     const requestWorkflow = workflowId;
@@ -586,19 +593,21 @@ export default function App() {
     }
   }
 
-  async function handleUpload(file: File) {
+  async function handleUpload(file: File): Promise<GalleryAsset | null> {
     const uploadProjectId = projectId;
-    if (!uploadProjectId) return;
+    if (!uploadProjectId) return null;
     setUploadProgress((curr) => ({ ...curr, [file.name]: 0 }));
     try {
       const asset = await uploadAsset(uploadProjectId, file, (progress) => {
         if (currentProjectId.current === uploadProjectId) setUploadProgress((curr) => ({ ...curr, [file.name]: progress }));
       });
-      if (currentProjectId.current !== uploadProjectId || asset.project_id !== uploadProjectId) return;
+      if (currentProjectId.current !== uploadProjectId || asset.project_id !== uploadProjectId) return null;
       setReferenceImages((curr) => [asset, ...curr.filter((item) => item.id !== asset.id)]);
       setSelectedAssets((curr) => [...new Set([...curr, asset.id])]);
+      return asset;
     } catch (cause) {
       if (currentProjectId.current === uploadProjectId) setError(`上传 ${file.name}：${apiMessage(cause)}`);
+      return null;
     } finally {
       if (currentProjectId.current === uploadProjectId) setUploadProgress((curr) => {
         const next = { ...curr };
@@ -626,15 +635,18 @@ export default function App() {
         return;
       }
       const validAssetIds = new Set(referenceAssets(referenceImages).filter((a) => a.project_id === projectId).map((a) => a.id));
+      const hasAssetParamSlots = splitParams(manifest).assets.length > 0;
       const body = {
         project_id: projectId,
         model_id: modelId,
         workflow_key: activeWorkflow.workflow_key,
         workflow_version: activeWorkflow.workflow_version,
         params,
-        asset_ids: supportsReferences(manifest)
-          ? [...new Set([...selectedAssets.filter((id) => validAssetIds.has(id)), ...assetIdsFromParams(params, validAssetIds)])]
-          : [],
+        asset_ids: hasAssetParamSlots
+          ? assetIdsFromParams(params, validAssetIds)
+          : supportsReferences(manifest)
+            ? [...new Set([...selectedAssets.filter((id) => validAssetIds.has(id)), ...assetIdsFromParams(params, validAssetIds)])]
+            : [],
         execution_policy: {
           provider: runtime,
           max_runtime_minutes: runtime === 'colab' ? maxRuntime : Math.min(30, runtimeCap),

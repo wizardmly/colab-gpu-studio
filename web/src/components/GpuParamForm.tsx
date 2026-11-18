@@ -1,5 +1,6 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { GalleryAsset, GpuManifest, GpuParameter } from '../lib/gpu-api';
+import { videoDurationPresets } from '../lib/colab-studio';
 import { friendlyHint, friendlyLabel, MODE_HELP, modeHelp } from '../lib/labels';
 import { InfoTip } from './ui';
 import styles from '../gpu.module.css';
@@ -12,10 +13,10 @@ type Props = {
   assets: GalleryAsset[];
   uploadProgress: Record<string, number>;
   onChange: (key: string, value: unknown) => void;
-  onUpload: (file: File) => Promise<void>;
+  onUpload: (file: File) => Promise<GalleryAsset | null | void>;
   /** 已由别处处理的字段（提示词、宽高），这里不再渲染，避免重复。 */
   excludeKeys?: string[];
-  /** assets=素材文件；options=常用选项（时长/模式等，直接展示）；advanced=其余全部（默认折叠）。 */
+  /** assets=素材文件；options=常用选项（时长/模式/画风解码等，直接展示）；advanced=其余全部（默认折叠）。 */
   section: ParamSection;
 };
 
@@ -68,7 +69,7 @@ function widgetOf(parameter: GpuParameter): string {
 const TECH_KEYS = /(^|_)(steps?|seed|cfg|cfg_scale|sampler|sampler_name|scheduler|denoise|clip_skip|negative|strength|weight)(_|$)/i;
 const COMMON_KEYS = /(^|_)(mode|duration|seconds|length|quality|fps)(_|$)/i;
 
-/** 把参数分成三层：素材、常用选项、高级。常用选项只放“模式 / 时长”这类会明显改变结果的下拉项。 */
+/** 把参数分成三层：素材、常用选项、高级。常用选项展示非技术性的选择项与视频时长，其余折叠。 */
 export function splitParams(manifest: GpuManifest | null | undefined, excludeKeys: string[] = []) {
   const assets: Entry[] = [];
   const options: Entry[] = [];
@@ -79,7 +80,7 @@ export function splitParams(manifest: GpuManifest | null | undefined, excludeKey
     const widget = widgetOf(param);
     const flaggedAdvanced = Boolean(param.advanced) || param.group === 'advanced';
     if (widget === 'file') assets.push({ param, key });
-    else if (!flaggedAdvanced && !TECH_KEYS.test(key) && COMMON_KEYS.test(key) && (widget === 'select' || widget === 'number')) options.push({ param, key });
+    else if (!flaggedAdvanced && !TECH_KEYS.test(key) && (widget === 'select' || (COMMON_KEYS.test(key) && widget === 'number'))) options.push({ param, key });
     else advanced.push({ param, key });
   });
   return { assets, options, advanced };
@@ -87,6 +88,7 @@ export function splitParams(manifest: GpuManifest | null | undefined, excludeKey
 
 export function GpuParamForm({ manifest, values, assets, uploadProgress, onChange, onUpload, excludeKeys = [], section }: Props) {
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [customNumeric, setCustomNumeric] = useState<Record<string, boolean>>({});
   const entries = useMemo(() => splitParams(manifest, excludeKeys)[section], [manifest, excludeKeys, section]);
   if (!entries.length) return null;
 
@@ -99,16 +101,35 @@ export function GpuParamForm({ manifest, values, assets, uploadProgress, onChang
     const hint = parameter.description || friendlyHint(key);
     const isMode = /(^|_)mode$/i.test(key);
     const selectedHelp = isMode ? modeHelp(current) : undefined;
+    const isDurationField = key === 'length' && widget === 'number' && typeof parameter.max === 'number' && parameter.max >= 60;
+    const durationPresets = isDurationField
+      ? videoDurationPresets(Number(parameter.min ?? 22), Number(parameter.max), Number(parameter.step || 1), 24)
+      : [];
+    const frameValue = Number(current) || Number(parameter.min ?? 22);
+    const matchedDuration = durationPresets.find((item) => item.frames === frameValue);
+    const showCustomDuration = isDurationField && (Boolean(customNumeric[key]) || (durationPresets.length > 0 && !matchedDuration));
+    const useChipSelect = widget === 'select' && options.length >= 2 && options.length <= 5;
 
     return (
       <div className={styles.paramField} key={key}>
         <div className={styles.paramLabel}>
-          <label htmlFor={`gpu-${key}`}>
-            {label}
-            {parameter.required && <b className={styles.requiredMark} aria-label="必填">*</b>}
-          </label>
+          {useChipSelect || (isDurationField && !showCustomDuration) ? (
+            <span className={styles.paramLabelText}>
+              {label}
+              {parameter.required && <b className={styles.requiredMark} aria-label="必填">*</b>}
+            </span>
+          ) : (
+            <label htmlFor={`gpu-${key}`}>
+              {label}
+              {parameter.required && <b className={styles.requiredMark} aria-label="必填">*</b>}
+            </label>
+          )}
           <span className={styles.paramLabelRight}>
-            {hasRange && <small className="muted">范围 {parameter.min ?? 0} ~ {parameter.max ?? '∞'}</small>}
+            {isDurationField ? (
+              <small className="muted">约 {Math.max(1, Math.round(frameValue / 24))} 秒（{frameValue} 帧）</small>
+            ) : (
+              hasRange && <small className="muted">范围 {parameter.min ?? 0} ~ {parameter.max ?? '∞'}</small>
+            )}
             {isMode && options.some((o) => MODE_HELP[o.value.toLowerCase()]) && (
               <InfoTip
                 label={`${label}说明`}
@@ -122,11 +143,32 @@ export function GpuParamForm({ manifest, values, assets, uploadProgress, onChang
 
         {widget === 'textarea' ? (
           <textarea id={`gpu-${key}`} value={String(current ?? '')} rows={2} onChange={(e) => onChange(key, e.target.value)} />
+        ) : useChipSelect ? (
+          <div id={`gpu-${key}`} className={styles.optionChips} role="group" aria-label={label}>
+            {options.map((option) => {
+              const active = String(current ?? '') === option.value;
+              const chipLabel = option.label !== option.value
+                ? option.label
+                : (modeHelp(option.value) && isMode ? modeHelp(option.value)!.name : option.label);
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={styles.optionChip}
+                  data-active={active || undefined}
+                  aria-pressed={active}
+                  onClick={() => onChange(key, option.value)}
+                >
+                  {chipLabel}
+                </button>
+              );
+            })}
+          </div>
         ) : widget === 'select' ? (
           <select id={`gpu-${key}`} value={String(current ?? '')} onChange={(e) => onChange(key, e.target.value)}>
             {!options.some((o) => o.value === String(current ?? '')) && <option value="">请选择</option>}
             {options.map((option) => (
-              <option key={option.value} value={option.value}>{modeHelp(option.value) && isMode ? `${modeHelp(option.value)!.name}（${option.value}）` : option.label}</option>
+              <option key={option.value} value={option.value}>{modeHelp(option.value) && isMode && option.label === option.value ? `${modeHelp(option.value)!.name}（${option.value}）` : option.label}</option>
             ))}
           </select>
         ) : widget === 'checkbox' ? (
@@ -134,6 +176,50 @@ export function GpuParamForm({ manifest, values, assets, uploadProgress, onChang
             <input id={`gpu-${key}`} type="checkbox" checked={Boolean(current)} onChange={(e) => onChange(key, e.target.checked)} />
             <span>开启</span>
           </label>
+        ) : isDurationField ? (
+          <div className={styles.railGroup}>
+            <div className={styles.optionChips} role="group" aria-label={label}>
+              {durationPresets.map((preset) => {
+                const active = !showCustomDuration && matchedDuration?.frames === preset.frames;
+                return (
+                  <button
+                    key={preset.frames}
+                    type="button"
+                    className={styles.optionChip}
+                    data-active={active || undefined}
+                    aria-pressed={active}
+                    onClick={() => {
+                      setCustomNumeric((prev) => ({ ...prev, [key]: false }));
+                      onChange(key, preset.frames);
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className={styles.optionChip}
+                data-active={showCustomDuration || undefined}
+                aria-pressed={showCustomDuration}
+                onClick={() => setCustomNumeric((prev) => ({ ...prev, [key]: true }))}
+              >
+                自定义帧数
+              </button>
+            </div>
+            {showCustomDuration && (
+              <input
+                id={`gpu-${key}`}
+                type="number"
+                inputMode="numeric"
+                value={String(current ?? '')}
+                min={parameter.min}
+                max={parameter.max}
+                step={parameter.step || 1}
+                onChange={(e) => onChange(key, e.target.value === '' ? '' : Number.parseInt(e.target.value, 10))}
+              />
+            )}
+          </div>
         ) : widget === 'number' ? (
           <input
             id={`gpu-${key}`}
@@ -161,8 +247,12 @@ export function GpuParamForm({ manifest, values, assets, uploadProgress, onChang
               accept={parameter.type === 'image' ? 'image/*' : parameter.type === 'video' ? 'video/*' : undefined}
               onChange={async (event) => {
                 const file = event.target.files?.[0];
-                if (file) await onUpload(file);
                 event.target.value = '';
+                if (!file) return;
+                const uploaded = await onUpload(file);
+                if (uploaded && typeof uploaded === 'object' && 'id' in uploaded) {
+                  onChange(key, uploaded.id);
+                }
               }}
             />
             {Object.entries(uploadProgress).map(([name, progress]) => (
@@ -173,7 +263,7 @@ export function GpuParamForm({ manifest, values, assets, uploadProgress, onChang
           <input id={`gpu-${key}`} type="text" value={String(current ?? '')} onChange={(e) => onChange(key, e.target.value)} />
         )}
 
-        {selectedHelp ? <span className={styles.hint}>{selectedHelp.text}</span> : hint ? <span className={styles.hint}>{hint}</span> : null}
+        {selectedHelp && !isMode ? <span className={styles.hint}>{selectedHelp.text}</span> : selectedHelp ? <span className={styles.hint}>{hint || selectedHelp.text}</span> : hint ? <span className={styles.hint}>{hint}</span> : null}
       </div>
     );
   }

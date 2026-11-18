@@ -333,3 +333,90 @@ export function colabPipelineSteps(job: Pick<GpuJob, 'state' | 'stage' | 'awaiti
     status: allDone || index < activeIndex ? 'done' : index === activeIndex ? 'active' : 'pending',
   }));
 }
+
+export interface VideoDurationPreset {
+  seconds: number;
+  frames: number;
+  label: string;
+}
+
+const DURATION_SECONDS_CANDIDATES = [3, 5, 8, 10, 15] as const;
+
+/** Derive default task max runtime from the selected workflow manifest within server cap. */
+export function resolveDefaultMaxRuntime(manifestMaxMinutes: unknown, runtimeCap: number): number {
+  const cap = Math.max(1, Number.isFinite(runtimeCap) && runtimeCap > 0 ? Math.round(runtimeCap) : 30);
+  const parsed = Number(manifestMaxMinutes);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(1, Math.min(Math.round(parsed), cap));
+  }
+  return Math.min(30, cap);
+}
+
+/** Snap friendly second presets (3s..15s) to the workflow's discrete frame step grid. */
+export function videoDurationPresets(
+  min: number,
+  max: number,
+  step: number,
+  fps = 24,
+): VideoDurationPreset[] {
+  const safeMin = Math.max(1, Math.round(min));
+  const safeMax = Math.max(safeMin, Math.round(max));
+  const safeStep = step > 1 ? Math.round(step) : 1;
+  const seen = new Set<number>();
+  const presets: VideoDurationPreset[] = [];
+  for (const seconds of DURATION_SECONDS_CANDIDATES) {
+    const target = seconds * fps;
+    let frames = safeMin + Math.round((target - safeMin) / safeStep) * safeStep;
+    if (frames < safeMin) frames = safeMin;
+    if (frames > safeMax || seen.has(frames)) continue;
+    seen.add(frames);
+    presets.push({ seconds, frames, label: `${seconds}秒` });
+  }
+  return presets;
+}
+
+/** Assign one or more uploaded/selected asset IDs into open parameter slots (or a specific slot). */
+export function fillAssetSlots(
+  slotKeys: string[],
+  currentParams: Record<string, unknown>,
+  newAssetIds: string[],
+  targetKey?: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...currentParams };
+  if (!slotKeys.length || !newAssetIds.length) return next;
+  const queue = [...newAssetIds];
+  if (targetKey && slotKeys.includes(targetKey)) {
+    next[targetKey] = queue.shift();
+  }
+  for (const assetId of queue) {
+    const emptyKey = slotKeys.find((key) => next[key] === undefined || next[key] === null || next[key] === '');
+    if (emptyKey) {
+      next[emptyKey] = assetId;
+    } else {
+      next[slotKeys[slotKeys.length - 1]] = assetId;
+    }
+  }
+  return next;
+}
+
+/** Remove an asset from a slot, optionally compacting numbered ref_* slots forward. */
+export function removeAndCompactAssetSlot(
+  slotKeys: string[],
+  currentParams: Record<string, unknown>,
+  removeKey: string,
+  compact: boolean,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...currentParams };
+  if (!compact) {
+    next[removeKey] = '';
+    return next;
+  }
+  const remaining = slotKeys
+    .filter((key) => key !== removeKey)
+    .map((key) => next[key])
+    .filter((value) => value !== undefined && value !== null && value !== '');
+  slotKeys.forEach((key, index) => {
+    next[key] = remaining[index] ?? '';
+  });
+  return next;
+}

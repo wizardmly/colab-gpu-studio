@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Sparkles, Image as ImageIcon, Film, Layers, Pencil, SlidersHorizontal, Play, Monitor, Cloud,
-  ChevronRight, Minus, Plus, X, Check, Star, Download, RotateCcw, Eye, Square, Timer, Cpu,
+  Minus, Plus, Star, Download, RotateCcw, Eye, Square, Timer, Cpu, Bookmark,
 } from 'lucide-react';
 import {
   assetUrl,
@@ -16,6 +16,7 @@ import {
 } from '../lib/gpu-api';
 import { GpuParamForm, splitParams } from '../components/GpuParamForm';
 import { ReferencePicker, supportsReferences } from '../components/ReferencePicker';
+import { VisualAssetSlots } from '../components/VisualAssetSlots';
 import { RuntimeSelection } from '../components/RuntimeSelection';
 import type { RuntimeLifecycle, RuntimeSelectionValue } from '../components/RuntimeSelection';
 import type { GpuAccount, GpuInstance } from '../components/AccountDirectory';
@@ -25,7 +26,7 @@ import { canRetainJobInstance, gpuLabel } from '../lib/gpu-label';
 import { instanceIdentity, instanceReusable } from '../lib/instance-submission';
 import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
 import { RUNTIME_HELP } from '../lib/labels';
-import { formatDateTime, parameterKey, parameterList, progressPercent, shown, terminalStates } from '../lib/ui-helpers';
+import { formatDateTime, parameterKey, parameterList, progressPercent, terminalStates } from '../lib/ui-helpers';
 import { workflowTitle, workflowUsage } from '../lib/workflow-copy';
 import styles from '../gpu.module.css';
 
@@ -110,7 +111,7 @@ export function CreatePanel({
   selectedAssets: string[];
   setSelectedAssets: (value: string[]) => void;
   uploadProgress: Record<string, number>;
-  onUpload: (file: File) => Promise<void>;
+  onUpload: (file: File) => Promise<GalleryAsset | null>;
   modelId: string;
   setModelId: (value: string) => void;
   workflowId: string;
@@ -148,9 +149,11 @@ export function CreatePanel({
   onOpenWorkflows?: () => void;
   onQuickEnableAccount?: (account: GpuAccount) => void;
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [presetsOpen, setPresetsOpen] = useState(false);
   const [customSize, setCustomSize] = useState(false);
   const [presetName, setPresetName] = useState('');
+  const [editingRuntime, setEditingRuntime] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   /* ───── 工作流分组：同一个 workflow_key 的所有版本归为一族 ───── */
   const families = useMemo(() => {
@@ -167,8 +170,11 @@ export function CreatePanel({
   const activeWorkflow = workflows.find((item) => item.id === workflowId);
   const currentFamily = activeWorkflow ? families.find((f) => f.key === activeWorkflow.workflow_key) : undefined;
   const category: Category = currentFamily?.category || 'image';
-  const modelName = (id?: string) => models.find((m) => m.model_id === id)?.display_name || id || '';
+  const categoryFamilies = families.filter((f) => f.category === category);
   const pickable = (fam: typeof families[number]) => fam.items.some((i) => i.state === 'published') ? fam.items.filter((i) => i.state === 'published') : fam.items;
+  const activeVersions = currentFamily ? pickable(currentFamily) : [];
+  const workflowPresets = presets.filter((p) => p.workflow_version_id === workflowId);
+  const modelName = (id?: string) => models.find((m) => m.model_id === id)?.display_name || id || '';
 
   function chooseWorkflow(wf: GpuWorkflow) {
     setModelId(wf.model_id);
@@ -186,7 +192,7 @@ export function CreatePanel({
   }
 
   const subtitle = activeWorkflow
-    ? String(activeWorkflow.description || activeWorkflow.manifest?.description || manifest?.description || modelName(activeWorkflow.model_id))
+    ? String(workflowUsage(activeWorkflow) || activeWorkflow.description || activeWorkflow.manifest?.description || manifest?.description || modelName(activeWorkflow.model_id))
     : '';
   const recommendedAccelerator = specBadgeText(manifest || activeWorkflow?.manifest);
 
@@ -215,6 +221,13 @@ export function CreatePanel({
   const split = useMemo(() => splitParams(manifest, excluded), [manifest, excluded]);
   const promptValue = String(params[promptKey] ?? '');
   const patch = (next: Record<string, unknown>) => setParams({ ...params, ...next });
+
+  function insertPromptTag(tag: string) {
+    const existing = String(params[promptKey] ?? '');
+    const separator = existing && !/\s$/.test(existing) ? ' ' : '';
+    patch({ [promptKey]: `${existing}${separator}${tag} ` });
+    promptRef.current?.focus();
+  }
 
   /* ───── Colab 运行时与右栏舞台数据 ───── */
   const summary = useMemo(
@@ -266,7 +279,7 @@ export function CreatePanel({
   const summaryLine = runtime === 'mock'
     ? '离线模拟 · 不连接 Colab、不扣 CU'
     : summary.usableAccounts.length > 0
-      ? `Colab GPU · ${activeAccountAlias} · ${pinnedReusable ? `复用热机 ${shortGpuName(pinnedReusable)}` : '自动分配 GPU'} · ${LIFECYCLE_SHORT[runtimeChoice.lifecycle]} · 限时 ${maxRuntime}m`
+      ? `Colab GPU · ${activeAccountAlias} · ${pinnedReusable ? `复用热机 ${shortGpuName(pinnedReusable)}` : '自动分配 GPU'} · ${LIFECYCLE_SHORT[runtimeChoice.lifecycle]}`
       : '需先完成 Google 账号授权或开启算力分配';
 
   if (!projectId) {
@@ -280,37 +293,76 @@ export function CreatePanel({
 
   return (
     <div className={styles.createWorkspace}>
-      {/* ───── 左侧紧凑参数轨 ───── */}
+      {/* ───── 左侧紧凑工作流设置轨 ───── */}
       <div className={styles.createRail}>
-        <Card
-          icon={<Layers size={17} strokeWidth={1.6} aria-hidden />}
-          title="创作模式与工作流"
-          aside={<button type="button" className={styles.linkButton} onClick={() => setPickerOpen(true)}>切换<ChevronRight size={15} strokeWidth={1.6} aria-hidden /></button>}
-        >
-          <Segmented<Category>
-            ariaLabel="创作类型"
-            value={category}
-            onChange={switchCategory}
-            options={[
-              { value: 'image', label: '图片生成', icon: <ImageIcon size={16} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'image') },
-              { value: 'video', label: '视频生成', icon: <Film size={16} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'video') },
-            ]}
-          />
+        <Card className={styles.composerCard}>
+          <div className={styles.composerTop}>
+            <Segmented<Category>
+              ariaLabel="创作类型"
+              value={category}
+              onChange={switchCategory}
+              options={[
+                { value: 'image', label: '图片生成', icon: <ImageIcon size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'image') },
+                { value: 'video', label: '视频生成', icon: <Film size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'video') },
+              ]}
+            />
+            <div className={styles.composerMetaActions}>
+              <button
+                type="button"
+                className="button secondary small"
+                aria-expanded={presetsOpen}
+                onClick={() => setPresetsOpen((open) => !open)}
+              >
+                <Bookmark size={13} aria-hidden />
+                预设{workflowPresets.length ? ` (${workflowPresets.length})` : ''}
+              </button>
+              {activeWorkflow && (
+                <InfoTip
+                  label="当前工作流说明"
+                  text={<>
+                    <span className={styles.tipLine}><b>{workflowTitle(activeWorkflow)}</b>（v{activeWorkflow.workflow_version}）</span>
+                    {subtitle && <span className={styles.tipLine}>{subtitle}</span>}
+                    <span className={styles.tipLine}>标识：{activeWorkflow.workflow_key}</span>
+                  </>}
+                />
+              )}
+            </div>
+          </div>
 
-          {activeWorkflow ? (
-            <button type="button" className={styles.wfCard} onClick={() => setPickerOpen(true)} aria-label="切换工作流">
-              <span className={styles.wfThumb}><Layers size={20} strokeWidth={1.4} aria-hidden /></span>
-              <span className={styles.wfBody}>
-                <span className={styles.wfName}>
-                  <strong>{workflowTitle(activeWorkflow)}</strong>
-                  <span className="pill">v{activeWorkflow.workflow_version}</span>
-                  {recommendedAccelerator && <span className="pill solid">{recommendedAccelerator}</span>}
-                </span>
-                <small className="muted">{activeWorkflow.workflow_key}{subtitle ? ` · ${subtitle}` : ''}</small>
-              </span>
-            </button>
+          {categoryFamilies.length > 0 ? (
+            <div className={styles.wfPillRow} role="group" aria-label="切换工作流">
+              {categoryFamilies.map((fam) => {
+                const list = pickable(fam);
+                const sample = list.find((item) => item.active) || list[0] || { workflow_key: fam.key };
+                const active = currentFamily?.key === fam.key;
+                const accel = specBadgeText((sample as GpuWorkflow).manifest);
+                return (
+                  <button
+                    key={fam.key}
+                    type="button"
+                    className={styles.wfPill}
+                    data-active={active || undefined}
+                    aria-pressed={active}
+                    onClick={() => chooseFamily(fam)}
+                  >
+                    <span className={styles.wfPillTitle}>{workflowTitle(sample)}</span>
+                    {accel && <em className={styles.wfPillSpec}>{accel}</em>}
+                  </button>
+                );
+              })}
+            </div>
           ) : (
             <p className="muted small">还没有可用的工作流，请先到「设置 › 工作流与模型」启用。</p>
+          )}
+
+          {activeVersions.length > 1 && (
+            <div className={styles.versionRow} style={{ padding: 0 }} role="group" aria-label="切换工作流版本">
+              {activeVersions.map((wf) => (
+                <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => chooseWorkflow(wf)}>
+                  v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
+                </button>
+              ))}
+            </div>
           )}
 
           {workflowUnpublished && (
@@ -324,60 +376,65 @@ export function CreatePanel({
             </div>
           )}
 
-          <details className={`foldable ${styles.presetBox}`}>
-            <summary>参数预设{presets.filter((p) => p.workflow_version_id === workflowId).length ? `（${presets.filter((p) => p.workflow_version_id === workflowId).length}）` : ''}</summary>
-            <div className="foldContent">
-              <div className="field">
-                <label htmlFor="preset-select">套用已存的参数</label>
-                <select id="preset-select" defaultValue="" onChange={(e) => {
-                  const preset = presets.find((p) => p.id === e.target.value);
-                  if (preset) onApplyPreset(preset);
-                }}>
-                  <option value="">选择预设…</option>
-                  {presets.filter((p) => p.workflow_version_id === workflowId).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
+          {presetsOpen && (
+            <div className={styles.railSection}>
+              {workflowPresets.length > 0 && (
+                <div className="field">
+                  <label htmlFor="preset-select">套用已存的参数预设</label>
+                  <select id="preset-select" defaultValue="" onChange={(e) => {
+                    const preset = presets.find((p) => p.id === e.target.value);
+                    if (preset) onApplyPreset(preset);
+                  }}>
+                    <option value="">选择预设…</option>
+                    {workflowPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div className={styles.inlineForm}>
-                <input aria-label="新预设名称" placeholder="给当前参数起个名字" value={presetName} onChange={(e) => setPresetName(e.target.value)} />
-                <button className="button secondary" type="button" disabled={!presetName.trim() || !workflowId} onClick={() => { onSavePreset(presetName.trim()); setPresetName(''); }}>保存</button>
+                <input aria-label="新预设名称" placeholder="保存当前参数为新预设" value={presetName} onChange={(e) => setPresetName(e.target.value)} />
+                <button className="button secondary small" type="button" disabled={!presetName.trim() || !workflowId} onClick={() => { onSavePreset(presetName.trim()); setPresetName(''); }}>保存</button>
               </div>
             </div>
-          </details>
+          )}
         </Card>
 
-        {/* 提示词与参考素材合卡 */}
-        <Card className={styles.promptCard} icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />} title="提示词与参考素材">
+        {/* 提示词与可视化参考图槽位合卡 */}
+        <Card className={styles.promptCard} icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />} title="提示词与参考图">
           <textarea
+            ref={promptRef}
             aria-label="提示词"
             value={promptValue}
             placeholder="描述想要的画面：主体、风格、光线、镜头、动作细节……"
-            rows={4}
+            rows={3}
             onChange={(e) => setParams({ ...params, [promptKey]: e.target.value })}
           />
-          {manifest && (split.assets.length > 0 || supportsReferences(manifest)) && (
+          {manifest && split.assets.length > 0 && (
             <div className={styles.railSection}>
-              <GpuParamForm
-                section="assets"
-                manifest={manifest}
+              <VisualAssetSlots
+                entries={split.assets}
                 values={params}
                 assets={gallery}
                 uploadProgress={uploadProgress}
-                onChange={(k, v) => setParams({ ...params, [k]: v })}
+                onPatchParams={patch}
                 onUpload={onUpload}
-                excludeKeys={excluded}
+                onInsertPromptTag={insertPromptTag}
               />
+            </div>
+          )}
+          {manifest && split.assets.length === 0 && supportsReferences(manifest) && (
+            <div className={styles.railSection}>
               <ReferencePicker
                 manifest={manifest}
                 assets={gallery}
                 selected={selectedAssets}
                 onChange={setSelectedAssets}
-                onUpload={onUpload}
+                onUpload={async (file) => { await onUpload(file); }}
               />
             </div>
           )}
         </Card>
 
-        {/* 画面尺寸 + 生成选项 + 数量合并为一张参数卡 */}
+        {/* 单行画幅 + 生成选项 + 数量合卡 */}
         <Card
           icon={<SlidersHorizontal size={17} strokeWidth={1.6} aria-hidden />}
           title="画面与生成参数"
@@ -388,22 +445,21 @@ export function CreatePanel({
               <div className={styles.ratioGrid} role="group" aria-label="画幅比例">
                 {sizes.map((s) => {
                   const on = !showCustom && matched?.label === s.label;
-                  const box = 20;
+                  const box = 16;
                   const bw = s.rw >= s.rh ? box : Math.round(box * s.rw / s.rh);
                   const bh = s.rh >= s.rw ? box : Math.round(box * s.rh / s.rw);
                   return (
                     <button key={s.label} type="button" className={styles.ratioChip} data-active={on} aria-pressed={on}
+                      title={`${s.label} (${s.w}×${s.h})`}
                       onClick={() => { setCustomSize(false); patch({ width: s.w, height: s.h }); }}>
                       <span className={styles.ratioShape} aria-hidden><i style={{ width: bw, height: bh }} /></span>
                       <strong>{s.label}</strong>
-                      <small>{s.w}×{s.h}</small>
                     </button>
                   );
                 })}
                 <button type="button" className={styles.ratioChip} data-active={showCustom} aria-pressed={showCustom} onClick={() => setCustomSize(true)}>
-                  <span className={styles.ratioShape} aria-hidden><i className={styles.ratioDashed} style={{ width: 20, height: 15 }} /></span>
+                  <span className={styles.ratioShape} aria-hidden><i className={styles.ratioDashed} style={{ width: 16, height: 12 }} /></span>
                   <strong>自定义</strong>
-                  <small>手动</small>
                 </button>
               </div>
               {showCustom && (
@@ -445,7 +501,7 @@ export function CreatePanel({
           <div className={`${styles.countRow} ${hasSize || split.options.length > 0 ? styles.railSection : ''}`}>
             <div>
               <strong>生成数量</strong>
-              <p className="muted small">同批连出会优先复用同一台机器</p>
+              <p className="muted small">同批连出优先复用同一台机器</p>
             </div>
             <div className={styles.stepper}>
               <button type="button" aria-label="减少数量" disabled={batchCount <= 1} onClick={() => setBatchCount(Math.max(1, batchCount - 1))}><Minus size={16} strokeWidth={1.8} aria-hidden /></button>
@@ -469,7 +525,7 @@ export function CreatePanel({
           </details>
         )}
 
-        {/* 次级运行微调（顶栏已有快捷开关，这里保留完整表单兼容各尺寸屏幕） */}
+        {/* 次级运行微调 */}
         <details id="create-runtime" className="foldable">
           <summary>
             <span className={styles.advTitle}><Play size={16} strokeWidth={1.6} aria-hidden />运行与超时微调</span>
@@ -508,14 +564,55 @@ export function CreatePanel({
         <div className={styles.createSubmit}>
           <div className={styles.submitMeta}>
             <span className="muted small" data-warn={colabBlocked || undefined}>{summaryLine}</span>
-            {colabBlocked && onOpenSettings && (
-              <button type="button" className={styles.linkButton} onClick={onOpenSettings}>去设置账号</button>
-            )}
-            {runtime === 'mock' && summary.usableAccounts.length > 0 && (
-              <button type="button" className={styles.linkButton} onClick={() => setRuntime('colab')}>改用 Colab</button>
-            )}
+            <div className={styles.submitMetaActions}>
+              {runtime === 'colab' && (
+                editingRuntime ? (
+                  <label className={styles.inlineRuntimeEdit}>
+                    <span>限时</span>
+                    <input
+                      type="number"
+                      aria-label="限时分钟"
+                      min={1}
+                      max={runtimeCap}
+                      value={maxRuntime || ''}
+                      onChange={(e) => setMaxRuntime(Number(e.target.value))}
+                      onBlur={() => setEditingRuntime(false)}
+                    />
+                    <span>m</span>
+                  </label>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.runtimeChipBtn}
+                    title="点击直接调整超时上限"
+                    onClick={() => setEditingRuntime(true)}
+                  >
+                    限时 {maxRuntime}m
+                  </button>
+                )
+              )}
+              {colabBlocked && onOpenSettings && (
+                <button type="button" className={styles.linkButton} onClick={onOpenSettings}>去设置账号</button>
+              )}
+              {runtime === 'mock' && summary.usableAccounts.length > 0 && (
+                <button type="button" className={styles.linkButton} onClick={() => setRuntime('colab')}>改用 Colab</button>
+              )}
+            </div>
           </div>
-          {timeoutRisk && <p className="status small" role="status">{timeoutRisk}</p>}
+          {timeoutRisk && (
+            <div className={styles.timeoutBanner} role="status">
+              <span className="small">{timeoutRisk}</span>
+              {maxRuntime < runtimeCap && (
+                <button
+                  type="button"
+                  className="button secondary small"
+                  onClick={() => setMaxRuntime(runtimeCap)}
+                >
+                  调高至 {runtimeCap} 分钟
+                </button>
+              )}
+            </div>
+          )}
           {error && <p className="status error small" role="alert">{error}</p>}
           <button
             className="button big block"
@@ -750,7 +847,7 @@ export function CreatePanel({
               {runtime === 'colab' ? `执行账号：${activeAccountAlias}` : '当前为离线模拟模式'}
             </p>
             <ol className={styles.stageGuide}>
-              <li><b>1. 填参数</b><span>在左侧输入提示词、画幅与参考素材</span></li>
+              <li><b>1. 填参数</b><span>在左侧输入提示词、选定工作流与参考图</span></li>
               <li><b>2. 一键直跑</b><span>点「立即生成」自动申请或复用在线 Colab 热机</span></li>
               <li><b>3. 实时直出</b><span>推理进度与云盘回传作品会直接呈现在本舞台</span></li>
             </ol>
@@ -763,47 +860,6 @@ export function CreatePanel({
           </button>
         )}
       </div>
-
-      {/* 工作流选择面板 */}
-      {pickerOpen && (
-        <div className={styles.dialogBackdrop} role="presentation" onClick={() => setPickerOpen(false)}>
-          <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="选择工作流" onClick={(e) => e.stopPropagation()}>
-            <div className={styles.cardHead}>
-              <h2>选择工作流</h2>
-              <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={() => setPickerOpen(false)}><X size={18} strokeWidth={1.6} aria-hidden /></button>
-            </div>
-            <p className="muted small">同一个工作流的不同版本收在一起，点版本即可切换。{category === 'image' ? '当前显示图片类。' : '当前显示视频类。'}</p>
-            <div className={styles.pickList}>
-              {families.filter((f) => f.category === category).map((fam) => {
-                const list = pickable(fam);
-                const here = currentFamily?.key === fam.key;
-                return (
-                  <div key={fam.key} className={styles.pickItem} data-on={here}>
-                    <button type="button" className={styles.pickMain} onClick={() => { chooseFamily(fam); setPickerOpen(false); }}>
-                      <span>
-                        <strong>{workflowTitle(list[0] || { workflow_key: fam.key })}</strong>
-                        <small className="muted">{workflowUsage(list[0] || { workflow_key: fam.key }) || modelName(fam.modelId)}</small>
-                        <small className="muted">{fam.key}</small>
-                      </span>
-                      {here && <Check size={18} strokeWidth={1.8} aria-hidden />}
-                    </button>
-                    {list.length > 1 && (
-                      <div className={styles.versionRow} role="group" aria-label={`${fam.key} 的版本`}>
-                        {list.map((wf) => (
-                          <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => { chooseWorkflow(wf); setPickerOpen(false); }}>
-                            v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              {!families.some((f) => f.category === category) && <p className="muted small">这个类型下还没有工作流。</p>}
-            </div>
-          </section>
-        </div>
-      )}
     </div>
   );
 }

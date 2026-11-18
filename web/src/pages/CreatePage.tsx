@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Sparkles, Image as ImageIcon, Film, Layers, Pencil, SlidersHorizontal, Play, Monitor, Cloud,
-  Minus, Plus, Star, Download, RotateCcw, Eye, Square, Timer, Cpu, Bookmark,
+  Sparkles, Image as ImageIcon, Film, Pencil, SlidersHorizontal, Play, Monitor, Cloud,
+  Minus, Plus, RotateCcw, Square, Cpu, Bookmark,
 } from 'lucide-react';
 import {
-  assetUrl,
   type GalleryAsset,
   type GpuJob,
   type GpuManifest,
@@ -21,12 +20,11 @@ import { RuntimeSelection } from '../components/RuntimeSelection';
 import type { RuntimeLifecycle, RuntimeSelectionValue } from '../components/RuntimeSelection';
 import type { GpuAccount, GpuInstance } from '../components/AccountDirectory';
 import { Card, InfoTip, Segmented } from '../components/ui';
-import { colabPipelineSteps, describeColabRuntime, shortGpuName } from '../lib/colab-studio';
-import { canRetainJobInstance, gpuLabel } from '../lib/gpu-label';
+import { describeColabRuntime, shortGpuName } from '../lib/colab-studio';
 import { instanceIdentity, instanceReusable } from '../lib/instance-submission';
-import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
+import { jobStageLabel } from '../lib/job-stage-rows';
 import { RUNTIME_HELP } from '../lib/labels';
-import { formatDateTime, parameterKey, parameterList, progressPercent, terminalStates } from '../lib/ui-helpers';
+import { parameterKey, parameterList, progressPercent, terminalStates } from '../lib/ui-helpers';
 import { workflowTitle, workflowUsage } from '../lib/workflow-copy';
 import styles from '../gpu.module.css';
 
@@ -69,13 +67,6 @@ function buildSizes(defW: number, defH: number, step: number, min: number, max: 
   });
 }
 
-function assetDims(asset: GalleryAsset): string {
-  const meta = (asset.metadata || {}) as Record<string, unknown>;
-  const w = Number(meta.width ?? asset.width);
-  const h = Number(meta.height ?? asset.height);
-  return w > 0 && h > 0 ? `${w} × ${h}` : '';
-}
-
 function specBadgeText(manifest: GpuManifest | null | undefined): string {
   const spec = manifest?.compute_spec;
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return '';
@@ -87,13 +78,12 @@ function specBadgeText(manifest: GpuManifest | null | undefined): string {
 
 export function CreatePanel({
   projectId, models, workflows, presets, settings, manifest, params, setParams, gallery,
-  outputs = [], jobs = [], highlightedJobId = null,
+  jobs = [], highlightedJobId = null,
   selectedAssets, setSelectedAssets, uploadProgress, onUpload, setModelId, workflowId, setWorkflowId,
   runtime, setRuntime, maxRuntime, setMaxRuntime, runtimeCap, runtimeError, timeoutRisk, batchCount, setBatchCount, batchMode,
   runtimeChoice, accounts, instances, onRuntimeChoiceChange,
   loading, error, onSubmit, onApplyPreset, onSavePreset,
-  onOpenAsset, onFavoriteAsset, onReuseAsset,
-  onOpenJobDetail, onCancelJob, onRetryJob, onRetainJob,
+  onOpenJobDetail, onCancelJob, onRetryJob,
   onOpenGallery, onOpenJobs, onOpenSettings, onOpenWorkflows, onQuickEnableAccount,
 }: {
   projectId: string;
@@ -194,7 +184,6 @@ export function CreatePanel({
   const subtitle = activeWorkflow
     ? String(workflowUsage(activeWorkflow) || activeWorkflow.description || activeWorkflow.manifest?.description || manifest?.description || modelName(activeWorkflow.model_id))
     : '';
-  const recommendedAccelerator = specBadgeText(manifest || activeWorkflow?.manifest);
 
   /* ───── 提示词、尺寸 ───── */
   const plist = useMemo(() => parameterList(manifest), [manifest]);
@@ -229,7 +218,7 @@ export function CreatePanel({
     promptRef.current?.focus();
   }
 
-  /* ───── Colab 运行时与右栏舞台数据 ───── */
+  /* ───── Colab 运行时与运行态提醒数据 ───── */
   const summary = useMemo(
     () => describeColabRuntime({ runtime, settings, accounts, instances, runtimeChoice }),
     [runtime, settings, accounts, instances, runtimeChoice],
@@ -247,32 +236,24 @@ export function CreatePanel({
     [jobs],
   );
 
-  const stageJobs = useMemo(() => {
+  const latestFailedJob = useMemo(() => {
     const failedJob = [...jobs]
       .filter((job) => !job.archived_at && ['failed', 'failed_final', 'blocked'].includes(String(job.state || '').toLowerCase()))
       .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))[0];
+    if (!failedJob) return null;
     const newestCompleted = [...jobs]
       .filter((job) => ['completed', 'succeeded'].includes(String(job.state || '').toLowerCase()))
       .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))[0];
-
-    const list = [...activeJobs];
-    if (failedJob && !list.some((item) => item.id === failedJob.id)) {
-      const failedStamp = String(failedJob.updated_at || failedJob.created_at || '');
-      const doneStamp = String(newestCompleted?.updated_at || newestCompleted?.created_at || '');
-      if (failedJob.id === highlightedJobId || (failedStamp && (!doneStamp || failedStamp >= doneStamp))) {
-        list.push(failedJob);
-      }
+    const failedStamp = String(failedJob.updated_at || failedJob.created_at || '');
+    const doneStamp = String(newestCompleted?.updated_at || newestCompleted?.created_at || '');
+    if (failedJob.id === highlightedJobId || (failedStamp && (!doneStamp || failedStamp >= doneStamp))) {
+      return failedJob;
     }
-    return list;
-  }, [activeJobs, jobs, highlightedJobId]);
+    return null;
+  }, [jobs, highlightedJobId]);
 
-  const sortedOutputs = useMemo(() => {
-    if (!outputs.length) return [];
-    const copy = [...outputs];
-    copy.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
-    return copy;
-  }, [outputs]);
-
+  const activeLeadJob = activeJobs[0] || null;
+  const activeLeadPct = activeLeadJob ? progressPercent(activeLeadJob.progress) : null;
   const activeAccountAlias = summary.activeAccount?.alias || '自动账号';
   const colabBlocked = runtime === 'colab' && summary.usableAccounts.length === 0;
   const workflowUnpublished = !activeWorkflow || activeWorkflow.state !== 'published';
@@ -292,149 +273,256 @@ export function CreatePanel({
   }
 
   return (
-    <div className={styles.createWorkspace}>
-      {/* ───── 左侧紧凑工作流设置轨 ───── */}
-      <div className={styles.createRail}>
-        <Card className={styles.composerCard}>
-          <div className={styles.composerTop}>
-            <Segmented<Category>
-              ariaLabel="创作类型"
-              value={category}
-              onChange={switchCategory}
-              options={[
-                { value: 'image', label: '图片生成', icon: <ImageIcon size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'image') },
-                { value: 'video', label: '视频生成', icon: <Film size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'video') },
-              ]}
-            />
-            <div className={styles.composerMetaActions}>
-              <button
-                type="button"
-                className="button secondary small"
-                aria-expanded={presetsOpen}
-                onClick={() => setPresetsOpen((open) => !open)}
-              >
-                <Bookmark size={13} aria-hidden />
-                预设{workflowPresets.length ? ` (${workflowPresets.length})` : ''}
+    <div className={styles.createCenter}>
+      {/* ───── 顶部紧凑工作流与状态条 ───── */}
+      <Card className={styles.composerCard}>
+        <div className={styles.composerTop}>
+          <Segmented<Category>
+            ariaLabel="创作类型"
+            value={category}
+            onChange={switchCategory}
+            options={[
+              { value: 'image', label: '图片生成', icon: <ImageIcon size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'image') },
+              { value: 'video', label: '视频生成', icon: <Film size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'video') },
+            ]}
+          />
+          <div className={styles.composerMetaActions}>
+            <button
+              type="button"
+              className="button secondary small"
+              aria-expanded={presetsOpen}
+              onClick={() => setPresetsOpen((open) => !open)}
+            >
+              <Bookmark size={13} aria-hidden />
+              预设{workflowPresets.length ? ` (${workflowPresets.length})` : ''}
+            </button>
+            {activeWorkflow && (
+              <InfoTip
+                label="当前工作流说明"
+                text={<>
+                  <span className={styles.tipLine}><b>{workflowTitle(activeWorkflow)}</b>（v{activeWorkflow.workflow_version}）</span>
+                  {subtitle && <span className={styles.tipLine}>{subtitle}</span>}
+                  <span className={styles.tipLine}>标识：{activeWorkflow.workflow_key}</span>
+                </>}
+              />
+            )}
+          </div>
+        </div>
+
+        {categoryFamilies.length > 0 ? (
+          <div className={styles.wfPillRow} role="group" aria-label="切换工作流">
+            {categoryFamilies.map((fam) => {
+              const list = pickable(fam);
+              const sample = list.find((item) => item.active) || list[0] || { workflow_key: fam.key };
+              const active = currentFamily?.key === fam.key;
+              const accel = specBadgeText((sample as GpuWorkflow).manifest);
+              return (
+                <button
+                  key={fam.key}
+                  type="button"
+                  className={styles.wfPill}
+                  data-active={active || undefined}
+                  aria-pressed={active}
+                  onClick={() => chooseFamily(fam)}
+                >
+                  <span className={styles.wfPillTitle}>{workflowTitle(sample)}</span>
+                  {accel && <em className={styles.wfPillSpec}>{accel}</em>}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="muted small">还没有可用的工作流，请先到「设置 › 工作流 + 模型设置」启用。</p>
+        )}
+
+        {activeVersions.length > 1 && (
+          <div className={styles.versionRow} style={{ padding: 0 }} role="group" aria-label="切换工作流版本">
+            {activeVersions.map((wf) => (
+              <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => chooseWorkflow(wf)}>
+                v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
               </button>
-              {activeWorkflow && (
-                <InfoTip
-                  label="当前工作流说明"
-                  text={<>
-                    <span className={styles.tipLine}><b>{workflowTitle(activeWorkflow)}</b>（v{activeWorkflow.workflow_version}）</span>
-                    {subtitle && <span className={styles.tipLine}>{subtitle}</span>}
-                    <span className={styles.tipLine}>标识：{activeWorkflow.workflow_key}</span>
-                  </>}
-                />
-              )}
+            ))}
+          </div>
+        )}
+
+        {workflowUnpublished && (
+          <div className={styles.railAlert}>
+            <span className="small">此工作流尚未完成首次 Colab 冒烟启用，不能直接运行真实 GPU。</span>
+            {onOpenWorkflows && (
+              <button type="button" className="button secondary small" onClick={onOpenWorkflows}>
+                去启用工作流
+              </button>
+            )}
+          </div>
+        )}
+
+        {presetsOpen && (
+          <div className={styles.railSection}>
+            {workflowPresets.length > 0 && (
+              <div className="field">
+                <label htmlFor="preset-select">套用已存的参数预设</label>
+                <select id="preset-select" defaultValue="" onChange={(e) => {
+                  const preset = presets.find((p) => p.id === e.target.value);
+                  if (preset) onApplyPreset(preset);
+                }}>
+                  <option value="">选择预设…</option>
+                  {workflowPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+            )}
+            <div className={styles.inlineForm}>
+              <input aria-label="新预设名称" placeholder="保存当前参数为新预设" value={presetName} onChange={(e) => setPresetName(e.target.value)} />
+              <button className="button secondary small" type="button" disabled={!presetName.trim() || !workflowId} onClick={() => { onSavePreset(presetName.trim()); setPresetName(''); }}>保存</button>
             </div>
           </div>
+        )}
 
-          {categoryFamilies.length > 0 ? (
-            <div className={styles.wfPillRow} role="group" aria-label="切换工作流">
-              {categoryFamilies.map((fam) => {
-                const list = pickable(fam);
-                const sample = list.find((item) => item.active) || list[0] || { workflow_key: fam.key };
-                const active = currentFamily?.key === fam.key;
-                const accel = specBadgeText((sample as GpuWorkflow).manifest);
-                return (
-                  <button
-                    key={fam.key}
-                    type="button"
-                    className={styles.wfPill}
-                    data-active={active || undefined}
-                    aria-pressed={active}
-                    onClick={() => chooseFamily(fam)}
-                  >
-                    <span className={styles.wfPillTitle}>{workflowTitle(sample)}</span>
-                    {accel && <em className={styles.wfPillSpec}>{accel}</em>}
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="muted small">还没有可用的工作流，请先到「设置 › 工作流与模型」启用。</p>
-          )}
+        {realAvailable && summary.needsAllocationAccount && !summary.usableAccounts.length && (
+          <div className={styles.warmBanner} data-tone="attention">
+            <span>Google 账号「{summary.needsAllocationAccount.alias}」已连接，开启算力分配即可开始 Colab 创作。</span>
+            {onQuickEnableAccount && (
+              <button type="button" className="button small" onClick={() => onQuickEnableAccount(summary.needsAllocationAccount!)}>
+                立即启用账号
+              </button>
+            )}
+          </div>
+        )}
 
-          {activeVersions.length > 1 && (
-            <div className={styles.versionRow} style={{ padding: 0 }} role="group" aria-label="切换工作流版本">
-              {activeVersions.map((wf) => (
-                <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => chooseWorkflow(wf)}>
-                  v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
-                </button>
-              ))}
-            </div>
-          )}
+        {realAvailable && !summary.needsAllocationAccount && !summary.usableAccounts.length && (
+          <div className={styles.warmBanner} data-tone="attention">
+            <span>
+              {summary.needsDriveAccount
+                ? `账号「${summary.needsDriveAccount.alias}」还差 Google Drive 授权，完成后才能用 Colab 创作。`
+                : '尚未连接可用的 Google Colab 账号。授权后将自动切回真实 Colab GPU。'}
+            </span>
+            {onOpenSettings && (
+              <button type="button" className="button small" onClick={onOpenSettings}>前往连接 Google 账号</button>
+            )}
+          </div>
+        )}
 
-          {workflowUnpublished && (
-            <div className={styles.railAlert}>
-              <span className="small">此工作流尚未完成首次 Colab 冒烟启用，不能直接运行真实 GPU。</span>
-              {onOpenWorkflows && (
-                <button type="button" className="button secondary small" onClick={onOpenWorkflows}>
-                  去启用工作流
+        {runtime === 'colab' && warmInstance && (
+          <div className={styles.warmBanner} data-tone="warm">
+            <span>
+              <Cpu size={15} strokeWidth={1.8} aria-hidden />
+              Colab 热机在线（{shortGpuName(warmInstance)} · {
+                (warmInstance.account_id && accounts.find((a) => a.account_id === warmInstance.account_id)?.alias)
+                || warmInstance.account_alias_snapshot
+                || '已连接'
+              }）— 现在生成可直接免冷启动复用
+            </span>
+            <button
+              type="button"
+              className={`button small ${runtimeChoice.instanceId === instanceIdentity(warmInstance) ? '' : 'secondary'}`}
+              onClick={() => {
+                const warmId = instanceIdentity(warmInstance);
+                const pinned = runtimeChoice.instanceId === warmId;
+                onRuntimeChoiceChange({
+                  ...runtimeChoice,
+                  accountId: warmInstance.account_id || runtimeChoice.accountId,
+                  instanceId: pinned ? null : warmId,
+                });
+              }}
+            >
+              {runtimeChoice.instanceId === instanceIdentity(warmInstance) ? '已锁定此热机' : '优先复用此热机'}
+            </button>
+          </div>
+        )}
+
+        {activeJobs.length > 0 ? (
+          <div className={styles.createJobNotice} data-tone="active" role="status">
+            <span className={styles.createJobNoticeText}>
+              <span className="pill solid">{activeJobs.length} 个运行中</span>
+              <span>
+                {activeLeadJob?.awaiting_prep
+                  ? '等待共享缓存准备完成'
+                  : activeLeadJob?.stage
+                    ? jobStageLabel(activeLeadJob.stage)
+                    : '正在排队或恢复运行时…'}
+                {activeLeadPct !== null ? ` · ${activeLeadPct}%` : ''}
+              </span>
+            </span>
+            <span className={styles.createJobNoticeActions}>
+              {activeLeadJob && onOpenJobDetail && (
+                <button type="button" className="button secondary small" onClick={() => onOpenJobDetail(activeLeadJob)}>实时日志</button>
+              )}
+              {activeLeadJob && onCancelJob && (
+                <button type="button" className="button secondary small" onClick={() => onCancelJob(activeLeadJob.id)}>
+                  <Square size={12} aria-hidden />取消
                 </button>
               )}
-            </div>
-          )}
-
-          {presetsOpen && (
-            <div className={styles.railSection}>
-              {workflowPresets.length > 0 && (
-                <div className="field">
-                  <label htmlFor="preset-select">套用已存的参数预设</label>
-                  <select id="preset-select" defaultValue="" onChange={(e) => {
-                    const preset = presets.find((p) => p.id === e.target.value);
-                    if (preset) onApplyPreset(preset);
-                  }}>
-                    <option value="">选择预设…</option>
-                    {workflowPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                </div>
+              {onOpenJobs && (
+                <button type="button" className="button secondary small" onClick={onOpenJobs}>任务进度</button>
               )}
-              <div className={styles.inlineForm}>
-                <input aria-label="新预设名称" placeholder="保存当前参数为新预设" value={presetName} onChange={(e) => setPresetName(e.target.value)} />
-                <button className="button secondary small" type="button" disabled={!presetName.trim() || !workflowId} onClick={() => { onSavePreset(presetName.trim()); setPresetName(''); }}>保存</button>
+              {onOpenGallery && (
+                <button type="button" className="button secondary small" onClick={onOpenGallery}>查看作品</button>
+              )}
+            </span>
+          </div>
+        ) : latestFailedJob ? (
+          <div className={styles.createJobNotice} data-tone="failed" role="alert">
+            <span className={styles.createJobNoticeText}>
+              <span className="pill danger">最近任务失败</span>
+              <span>{latestFailedJob.error_message || latestFailedJob.error || '最近任务执行失败'}</span>
+            </span>
+            <span className={styles.createJobNoticeActions}>
+              {onOpenJobDetail && (
+                <button type="button" className="button secondary small" onClick={() => onOpenJobDetail(latestFailedJob)}>实时日志</button>
+              )}
+              {onRetryJob && (
+                <button type="button" className="button small" onClick={() => onRetryJob(latestFailedJob.id)}>
+                  <RotateCcw size={13} aria-hidden />{latestFailedJob.error_code === 'gpu_timeout' ? '调参重试' : '重新生成'}
+                </button>
+              )}
+            </span>
+          </div>
+        ) : null}
+      </Card>
+
+      {/* ───── 居中双栏创作区：左栏提示词与素材，右栏参数与生成 ───── */}
+      <div className={styles.createStudioGrid}>
+        <div className={styles.createMainCol}>
+          <Card
+            className={styles.promptCard}
+            icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />}
+            title={split.assets.length > 0 ? '提示词与参考图' : '提示词'}
+          >
+            <textarea
+              ref={promptRef}
+              aria-label="提示词"
+              value={promptValue}
+              placeholder="描述想要的画面：主体、风格、光线、镜头、动作细节……"
+              rows={4}
+              onChange={(e) => setParams({ ...params, [promptKey]: e.target.value })}
+            />
+            {manifest && split.assets.length > 0 && (
+              <div className={styles.railSection}>
+                <VisualAssetSlots
+                  entries={split.assets}
+                  values={params}
+                  assets={gallery}
+                  uploadProgress={uploadProgress}
+                  onPatchParams={patch}
+                  onUpload={onUpload}
+                  onInsertPromptTag={insertPromptTag}
+                />
               </div>
-            </div>
-          )}
-        </Card>
+            )}
+            {manifest && split.assets.length === 0 && supportsReferences(manifest) && (
+              <div className={styles.railSection}>
+                <ReferencePicker
+                  manifest={manifest}
+                  assets={gallery}
+                  selected={selectedAssets}
+                  onChange={setSelectedAssets}
+                  onUpload={async (file) => { await onUpload(file); }}
+                />
+              </div>
+            )}
+          </Card>
+        </div>
 
-        {/* 提示词与可视化参考图槽位合卡 */}
-        <Card className={styles.promptCard} icon={<Pencil size={17} strokeWidth={1.6} aria-hidden />} title="提示词与参考图">
-          <textarea
-            ref={promptRef}
-            aria-label="提示词"
-            value={promptValue}
-            placeholder="描述想要的画面：主体、风格、光线、镜头、动作细节……"
-            rows={3}
-            onChange={(e) => setParams({ ...params, [promptKey]: e.target.value })}
-          />
-          {manifest && split.assets.length > 0 && (
-            <div className={styles.railSection}>
-              <VisualAssetSlots
-                entries={split.assets}
-                values={params}
-                assets={gallery}
-                uploadProgress={uploadProgress}
-                onPatchParams={patch}
-                onUpload={onUpload}
-                onInsertPromptTag={insertPromptTag}
-              />
-            </div>
-          )}
-          {manifest && split.assets.length === 0 && supportsReferences(manifest) && (
-            <div className={styles.railSection}>
-              <ReferencePicker
-                manifest={manifest}
-                assets={gallery}
-                selected={selectedAssets}
-                onChange={setSelectedAssets}
-                onUpload={async (file) => { await onUpload(file); }}
-              />
-            </div>
-          )}
-        </Card>
-
-        {/* 单行画幅 + 生成选项 + 数量合卡 */}
+        <div className={styles.createSideCol}>
         <Card
           icon={<SlidersHorizontal size={17} strokeWidth={1.6} aria-hidden />}
           title="画面与生成参数"
@@ -624,241 +712,7 @@ export function CreatePanel({
             {loading === 'submit' ? '正在派发到 Colab…' : '立即生成'}
           </button>
         </div>
-      </div>
-
-      {/* ───── 右侧实时 Colab 执行舞台 & 本项目作品墙 ───── */}
-      <div className={styles.createStage}>
-        <header className={styles.stageHead}>
-          <div className={styles.stageTitleGroup}>
-            <h2><Sparkles size={19} strokeWidth={1.6} aria-hidden />Colab 实时舞台</h2>
-            {activeJobs.length > 0 && <span className="pill solid">{activeJobs.length} 个运行中</span>}
-            <span className="pill">{sortedOutputs.length} 件作品</span>
-          </div>
-          <div className={styles.stageLinks}>
-            {onOpenGallery && <button type="button" className="button secondary small" onClick={onOpenGallery}>全部作品</button>}
-            {onOpenJobs && <button type="button" className="button secondary small" onClick={onOpenJobs}>任务记录</button>}
-          </div>
-        </header>
-
-        {/* 上下文状态横幅 */}
-        {realAvailable && summary.needsAllocationAccount && !summary.usableAccounts.length && (
-          <div className={styles.warmBanner} data-tone="attention">
-            <span>Google 账号「{summary.needsAllocationAccount.alias}」已连接，开启算力分配即可开始 Colab 创作。</span>
-            {onQuickEnableAccount && (
-              <button type="button" className="button small" onClick={() => onQuickEnableAccount(summary.needsAllocationAccount!)}>
-                立即启用账号
-              </button>
-            )}
-          </div>
-        )}
-
-        {realAvailable && !summary.needsAllocationAccount && !summary.usableAccounts.length && (
-          <div className={styles.warmBanner} data-tone="attention">
-            <span>
-              {summary.needsDriveAccount
-                ? `账号「${summary.needsDriveAccount.alias}」还差 Google Drive 授权，完成后才能用 Colab 创作。`
-                : '尚未连接可用的 Google Colab 账号。授权后将自动切回真实 Colab GPU。'}
-            </span>
-            {onOpenSettings && (
-              <button type="button" className="button small" onClick={onOpenSettings}>前往连接 Google 账号</button>
-            )}
-          </div>
-        )}
-
-        {runtime === 'colab' && warmInstance && (
-          <div className={styles.warmBanner} data-tone="warm">
-            <span>
-              <Cpu size={15} strokeWidth={1.8} aria-hidden />
-              Colab 热机在线（{shortGpuName(warmInstance)} · {
-                (warmInstance.account_id && accounts.find((a) => a.account_id === warmInstance.account_id)?.alias)
-                || warmInstance.account_alias_snapshot
-                || '已连接'
-              }）— 现在生成可直接免冷启动复用
-            </span>
-            <button
-              type="button"
-              className={`button small ${runtimeChoice.instanceId === instanceIdentity(warmInstance) ? '' : 'secondary'}`}
-              onClick={() => {
-                const warmId = instanceIdentity(warmInstance);
-                const pinned = runtimeChoice.instanceId === warmId;
-                onRuntimeChoiceChange({
-                  ...runtimeChoice,
-                  accountId: warmInstance.account_id || runtimeChoice.accountId,
-                  instanceId: pinned ? null : warmId,
-                });
-              }}
-            >
-              {runtimeChoice.instanceId === instanceIdentity(warmInstance) ? '已锁定此热机' : '优先复用此热机'}
-            </button>
-          </div>
-        )}
-
-        {/* 运行中 / 最近异常的 Colab 任务进展示板 */}
-        {stageJobs.length > 0 && (
-          <section className={styles.activeStageList} aria-label="Colab 执行动态">
-            {stageJobs.map((job) => {
-              const s = String(job.state || 'queued').toLowerCase();
-              const isTerminal = terminalStates.has(s);
-              const failed = ['failed', 'failed_final', 'blocked'].includes(s);
-              const pct = progressPercent(job.progress);
-              const steps = colabPipelineSteps(job);
-              const matchingWf = workflows.find((w) => w.workflow_key === job.workflow_key);
-              const retained = canRetainJobInstance(job) && Boolean(job.retained_until || job.instance_state === 'retained_idle');
-              const retainEligible = canRetainJobInstance(job) && !retained;
-              const accountName = job.account_alias_snapshot || (job.account_id ? accounts.find((a) => a.account_id === job.account_id)?.alias : '') || '';
-              return (
-                <article className={styles.liveJobCard} key={job.id} data-failed={failed || undefined}>
-                  <div className={styles.liveJobTop}>
-                    <div className={styles.liveJobTitle}>
-                      <strong>{matchingWf ? workflowTitle(matchingWf) : (job.workflow_key || `任务 ${job.id.slice(0, 8)}`)}</strong>
-                      <span className="muted small">
-                        {accountName ? `${accountName} · ` : ''}{gpuLabel(job)} · {formatDateTime(job.created_at)}
-                      </span>
-                    </div>
-                    <span className={`pill ${failed ? 'danger' : !isTerminal ? 'solid' : ''}`}>{jobStateLabel(job.state, job)}</span>
-                  </div>
-
-                  {!failed && (
-                    <ol className={styles.pipelineRow} aria-label="执行阶段">
-                      {steps.map((stepItem) => (
-                        <li key={stepItem.key} className={styles.pipelineStep} data-state={stepItem.status}>
-                          <span className={styles.pipelineDot} aria-hidden />
-                          <span>{stepItem.label}</span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-
-                  {!isTerminal && (
-                    <div className={styles.progressBlock}>
-                      <div className={styles.progressText}>
-                        <span>{job.awaiting_prep ? '等待共享缓存准备完成' : job.stage ? jobStageLabel(job.stage) : '正在排队或恢复运行时…'}</span>
-                        {pct !== null && <span>{pct}%</span>}
-                      </div>
-                      <div className={styles.progress} data-indeterminate={pct === null}><span style={pct !== null ? { width: `${pct}%` } : undefined} /></div>
-                    </div>
-                  )}
-
-                  {(job.error_message || job.error) && (
-                    <p className="status error small" role="alert">{job.error_message || job.error}</p>
-                  )}
-
-                  <div className={styles.liveJobActions}>
-                    {onOpenJobDetail && (
-                      <button type="button" className="button secondary small" onClick={() => onOpenJobDetail(job)}>实时日志</button>
-                    )}
-                    {retainEligible && onRetainJob && (
-                      <button type="button" className="button secondary small" onClick={() => onRetainJob(job)}>
-                        <Timer size={13} aria-hidden />跑完保留热机
-                      </button>
-                    )}
-                    {retained && <span className="pill">已保留热机</span>}
-                    {!isTerminal && onCancelJob && (
-                      <button type="button" className="button secondary small" onClick={() => onCancelJob(job.id)}>
-                        <Square size={12} aria-hidden />取消
-                      </button>
-                    )}
-                    {failed && onRetryJob && (
-                      <button type="button" className="button small" onClick={() => onRetryJob(job.id)}>
-                        <RotateCcw size={13} aria-hidden />{job.error_code === 'gpu_timeout' ? '调参重试' : '重新生成'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </section>
-        )}
-
-        {/* 本项目最新作品直出画廊 */}
-        {sortedOutputs.length > 0 ? (
-          <div className={styles.stageGalleryGrid}>
-            {sortedOutputs.slice(0, 12).map((asset) => {
-              const isVideo = asset.mime.startsWith('video/');
-              const isJson = asset.mime.includes('json') || asset.filename?.toLowerCase().endsWith('.json');
-              const dimText = assetDims(asset);
-              return (
-                <article className={styles.stageTile} key={asset.id}>
-                  <div className={styles.tileMedia}>
-                    <button
-                      type="button"
-                      className={styles.tileCover}
-                      aria-label={`查看 ${asset.filename || '作品'}`}
-                      onClick={() => onOpenAsset?.(asset)}
-                    >
-                      {isVideo ? (
-                        <video src={assetUrl(asset)} preload="metadata" muted playsInline aria-label={asset.filename || '视频'} />
-                      ) : isJson ? (
-                        <span className={styles.tileJson}>JSON<small>诊断文件</small></span>
-                      ) : (
-                        <img loading="lazy" src={assetUrl(asset, true)} alt={asset.filename || '作品'} />
-                      )}
-                    </button>
-                    <span className={styles.tileType}>
-                      {isVideo ? <Film size={12} strokeWidth={1.8} aria-hidden /> : <ImageIcon size={12} strokeWidth={1.8} aria-hidden />}
-                      {isVideo ? '视频' : '图片'}
-                    </span>
-                    {dimText && <span className={styles.tileHud}>{dimText}</span>}
-                  </div>
-                  <div className={styles.tileMeta}>
-                    <div>
-                      <strong title={asset.filename || asset.id}>{asset.filename || `作品 ${asset.id.slice(0, 6)}`}</strong>
-                      <small className="muted">{asset.source_job_id ? `任务 ${asset.source_job_id.slice(0, 6)}` : '上传素材'}</small>
-                    </div>
-                    {onFavoriteAsset && (
-                      <button
-                        type="button"
-                        className={styles.starBtn}
-                        data-on={Boolean(asset.favorite)}
-                        aria-label={asset.favorite ? '取消收藏' : '收藏'}
-                        onClick={() => onFavoriteAsset(asset)}
-                      >
-                        <Star size={16} strokeWidth={1.6} fill={asset.favorite ? 'currentColor' : 'none'} aria-hidden />
-                      </button>
-                    )}
-                  </div>
-                  <div className={styles.stageTileActions}>
-                    {onReuseAsset && asset.source_job_id && (
-                      <button type="button" className="button secondary small" onClick={() => onReuseAsset(asset)}>
-                        <RotateCcw size={12} aria-hidden />同参微调
-                      </button>
-                    )}
-                    {onOpenAsset && (
-                      <button type="button" className="button secondary small" onClick={() => onOpenAsset(asset)}>
-                        <Eye size={12} aria-hidden />预览
-                      </button>
-                    )}
-                    <a className="button secondary small" href={assetUrl(asset)} download={asset.filename || asset.id} target="_blank" rel="noreferrer">
-                      <Download size={12} aria-hidden />下载
-                    </a>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        ) : stageJobs.length === 0 ? (
-          <div className={styles.stageEmpty}>
-            <div className={styles.stageEmptyIcon}><Sparkles size={24} strokeWidth={1.5} aria-hidden /></div>
-            <strong>Colab 创作舞台已就绪</strong>
-            <p className="muted small">
-              当前工作流：{activeWorkflow ? workflowTitle(activeWorkflow) : '未选择'}
-              {recommendedAccelerator ? `（推荐 ${recommendedAccelerator}）` : ''}
-              {' · '}
-              {runtime === 'colab' ? `执行账号：${activeAccountAlias}` : '当前为离线模拟模式'}
-            </p>
-            <ol className={styles.stageGuide}>
-              <li><b>1. 填参数</b><span>在左侧输入提示词、选定工作流与参考图</span></li>
-              <li><b>2. 一键直跑</b><span>点「立即生成」自动申请或复用在线 Colab 热机</span></li>
-              <li><b>3. 实时直出</b><span>推理进度与云盘回传作品会直接呈现在本舞台</span></li>
-            </ol>
-          </div>
-        ) : null}
-
-        {sortedOutputs.length > 12 && onOpenGallery && (
-          <button type="button" className="button secondary block" onClick={onOpenGallery}>
-            查看全部 {sortedOutputs.length} 件作品
-          </button>
-        )}
+        </div>
       </div>
     </div>
   );

@@ -179,7 +179,6 @@ svg { flex: none; }
   background: transparent; color: var(--muted); font-size: 0.72rem;
 }
 .workspaceNav button[aria-current="page"] { color: var(--text); background: var(--card-2); }
-.workspaceNav .desktopSettings { display: none; }
 .tabBadge {
   position: absolute; top: 2px; right: calc(50% - 22px);
   min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--r-full);
@@ -230,7 +229,7 @@ svg { flex: none; }
     border-top: 0;
     border-right: 1px solid var(--line);
   }
-  .workspaceNav button, .workspaceNav .desktopSettings {
+  .workspaceNav button {
     display: flex;
     align-items: center;
     gap: 11px;
@@ -242,7 +241,7 @@ svg { flex: none; }
   .workspaceNav button:hover, .topbarActions button:hover { background: var(--card); }
   .workspaceNav button[aria-current="page"] { background: var(--card-2); font-weight: 650; }
   .workspaceNav button > svg { width: 18px; height: 18px; }
-  .workspaceNav .desktopSettings { margin-top: 10px; }
+  .workspaceNav .navSettingsItem { margin-top: 8px; }
   .tabBadge { position: static; margin-left: auto; }
 }
 

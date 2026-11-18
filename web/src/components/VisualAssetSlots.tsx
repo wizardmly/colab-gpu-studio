@@ -177,7 +177,7 @@ export function VisualAssetSlots({
                     onClick={() => setPicker({ mode: 'slot', key: entry.key, acceptType: String(entry.param.type || 'image'), isRefGroup: true })}
                   >
                     {asset && asset.mime.startsWith('image/') ? (
-                      <img src={assetUrl(asset, true)} alt={asset.filename || `参考图 ${slotNum}`} loading="lazy" />
+                      <img className={styles.assetThumbImg} src={assetUrl(asset, true)} alt={asset.filename || `参考图 ${slotNum}`} loading="lazy" />
                     ) : (
                       <span className={styles.refMedia}>已选</span>
                     )}
@@ -296,7 +296,7 @@ export function VisualAssetSlots({
                       onClick={() => setPicker({ mode: 'slot', key, acceptType: expectedType, isRefGroup: false })}
                     >
                       {asset && asset.mime.startsWith('image/') ? (
-                        <img src={assetUrl(asset, true)} alt={asset.filename || label} loading="lazy" />
+                        <img className={styles.assetThumbImg} src={assetUrl(asset, true)} alt={asset.filename || label} loading="lazy" />
                       ) : (
                         <span className={styles.refMedia}>{asset?.filename || '已选素材'}</span>
                       )}
@@ -452,15 +452,18 @@ export function VisualAssetSlots({
                         }
                       }}
                     >
-                      {asset.mime.startsWith('image/') ? (
-                        <img src={assetUrl(asset, true)} alt={asset.filename || '图片'} loading="lazy" />
-                      ) : (
-                        <span className={styles.refMedia}>{asset.filename || '素材'}</span>
-                      )}
-                      {slotNum && <span className={styles.assetSlotBadge}>#{slotNum}</span>}
-                      {isCurrentSlot && (
-                        <span className={styles.refCheck}><Check size={12} strokeWidth={2.4} aria-hidden /></span>
-                      )}
+                      <span className={styles.assetLibraryThumb}>
+                        {asset.mime.startsWith('image/') ? (
+                          <img className={styles.assetLibraryImg} src={assetUrl(asset, true)} alt={asset.filename || '图片'} loading="lazy" />
+                        ) : (
+                          <span className={styles.refMedia}>{asset.filename || '素材'}</span>
+                        )}
+                        {slotNum && <span className={styles.assetSlotBadge}>#{slotNum}</span>}
+                        {isCurrentSlot && (
+                          <span className={styles.refCheck}><Check size={12} strokeWidth={2.4} aria-hidden /></span>
+                        )}
+                      </span>
+                      <small className={styles.assetLibraryName}>{asset.filename || '图片'}</small>
                     </button>
                   );
                 })}

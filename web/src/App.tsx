@@ -1,10 +1,9 @@
-import { SettingsPanel } from './pages/SettingsPage';
+import { SettingsPanel, type SettingsSection } from './pages/SettingsPage';
 import { GalleryPanel } from './pages/GalleryPage';
 import { TasksPanel } from './pages/JobsPage';
 import { CreatePanel, type RuntimeChoice } from './pages/CreatePage';
-import { ComputePage } from './pages/ComputePage';
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
+import { Sparkles, Zap, Image as ImageIcon, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
 import {
   apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset,
   apiFetch,
@@ -29,9 +28,9 @@ import { formatInstanceTime } from './lib/instance-time';
 import { JobHistoryDetails } from './components/JobHistoryDetails';
 import styles from './gpu.module.css';
 
-const tabs = ['创作', '作品', '任务', '算力'] as const;
-type Tab = typeof tabs[number] | '设置';
-const tabIcons = { 创作: Sparkles, 作品: ImageIcon, 任务: Zap, 算力: Cpu, 设置: SettingsIcon } as const;
+const tabs = ['创作', '作品', '任务', '设置'] as const;
+type Tab = typeof tabs[number];
+const tabIcons = { 创作: Sparkles, 作品: ImageIcon, 任务: Zap, 设置: SettingsIcon } as const;
 const terminalStates = new Set(['completed', 'succeeded', 'failed', 'failed_final', 'cancelled', 'cancelled_local', 'blocked']);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -221,7 +220,11 @@ export default function App() {
   );
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
   const [tab, setTab] = useState<Tab>(oauthReturnRef.current.justConnected ? '设置' : '创作');
-  const [settingsInitialView, setSettingsInitialView] = useState<'main' | 'workflows'>('main');
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('accounts');
+  function openSettings(section: SettingsSection = 'accounts') {
+    setSettingsSection(section);
+    setTab('设置');
+  }
   const [oauthJustConnected, setOauthJustConnected] = useState(oauthReturnRef.current.justConnected);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
@@ -544,7 +547,7 @@ export default function App() {
   }, [projectId, loggedIn, tab, completedOutputsSignature]);
 
   useEffect(() => {
-    if (!loggedIn || (!completedOutputsSignature && tab !== '算力')) return;
+    if (!loggedIn || (!completedOutputsSignature && tab !== '设置')) return;
     let alive = true;
     getGpuUsage().then((next) => alive && setUsage(next)).catch(() => undefined);
     return () => { alive = false; };
@@ -815,7 +818,7 @@ export default function App() {
     if (!id) return;
     changeRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes });
     selectRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
-    setTab('算力');
+    openSettings('resources');
   }
 
   function continueInstance(instance: GpuInstance) {
@@ -993,8 +996,8 @@ export default function App() {
             onRetainInstance={(instance) => void retainInstance(instance)}
             onStopInstance={(instance) => setStopTarget(instance)}
             onEmergencyStop={() => setConfirm('stop')}
-            onOpenCompute={() => setTab('算力')}
-            onOpenSettings={() => { setSettingsInitialView('main'); setTab('设置'); }}
+            onOpenCompute={() => openSettings('usage')}
+            onOpenSettings={() => openSettings('accounts')}
           />
           <button className="projectChip" type="button" aria-label="切换项目" onClick={() => setShowProjectSheet(true)}>
             <Folder size={15} strokeWidth={1.6} aria-hidden />
@@ -1004,22 +1007,22 @@ export default function App() {
           <button className="iconButton" type="button" aria-label="新建项目" title="新建项目" onClick={() => setShowNewProject(true)}>
             <Plus size={18} strokeWidth={1.6} aria-hidden />
           </button>
-          <button className="iconButton mobileSettings" aria-label="打开设置" onClick={() => { setSettingsInitialView('main'); setTab('设置'); }}>
+          <button className="iconButton mobileSettings" aria-label="打开设置" onClick={() => openSettings('accounts')}>
             <SettingsIcon size={18} strokeWidth={1.6} aria-hidden />
           </button>
         </div>
       </header>
 
       <nav className="workspaceNav" aria-label="工作区导航">
-        {([...tabs, '设置'] as const).map((item) => {
+        {tabs.map((item) => {
           const Icon = tabIcons[item];
           return (
-            <button key={item} type="button" className={item === '设置' ? 'desktopSettings' : undefined}
+            <button key={item} type="button" className={item === '设置' ? 'navSettingsItem' : undefined}
               aria-label={item === '设置' ? '打开设置' : undefined}
               aria-current={tab === item ? 'page' : undefined}
               onClick={() => {
-                if (item === '设置') setSettingsInitialView('main');
-                setTab(item);
+                if (item === '设置') openSettings('accounts');
+                else setTab(item);
               }}>
               <Icon size={21} strokeWidth={1.5} aria-hidden />
               <span>{item}</span>
@@ -1092,8 +1095,8 @@ export default function App() {
             onRetainJob={(job) => void retainJob(job)}
             onOpenGallery={() => setTab('作品')}
             onOpenJobs={() => setTab('任务')}
-            onOpenSettings={() => { setSettingsInitialView('main'); setTab('设置'); }}
-            onOpenWorkflows={() => { setSettingsInitialView('workflows'); setTab('设置'); }}
+            onOpenSettings={() => openSettings('accounts')}
+            onOpenWorkflows={() => openSettings('workflows')}
             onQuickEnableAccount={(account) => void quickEnableAccount(account)}
           />
         )}
@@ -1110,7 +1113,7 @@ export default function App() {
             onRetain={(job) => void retainJob(job)}
             onArchive={archiveJob}
             onRelease={releaseJobInstance}
-            onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); setTab('算力'); } }}
+            onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); openSettings('resources'); } }}
           />
         )}
 
@@ -1125,35 +1128,29 @@ export default function App() {
           />
         )}
 
-        {tab === '算力' && (
-          <ComputePage
-            settings={settings}
-            usage={usage}
-            instances={instances}
-            onContinue={continueInstance}
-            onOpenWorkbench={openInstanceWorkbench}
-            onRefreshInstances={() => resourceRefresh.current?.()}
-            onStop={() => setConfirm('stop')}
-            onCheck={() => void checkGpu()}
-            loadingStop={loading === 'stop'}
-            loadingCheck={loading === 'check'}
-            specs={specs}
-            specsNote={specsNote}
-            error={error || resourceError}
-          />
-        )}
         {tab === '设置' && (
           <SettingsPanel
             accounts={accounts}
             onAccountsChange={setAccounts}
             settings={settings}
+            usage={usage}
+            instances={instances}
+            specs={specs}
+            specsNote={specsNote}
+            loadingStop={loading === 'stop'}
+            loadingCheck={loading === 'check'}
+            resourceError={resourceError}
             workflows={workflows}
             error={error}
-            initialView={settingsInitialView}
+            initialSection={settingsSection}
             oauthJustConnected={oauthJustConnected}
             hasUsableColab={hasUsableColab}
             onGoCreate={() => { setOauthJustConnected(false); setTab('创作'); }}
-            onOpenCompute={() => setTab('算力')}
+            onCheckGpu={() => void checkGpu()}
+            onStopCompute={() => setConfirm('stop')}
+            onContinueInstance={continueInstance}
+            onOpenWorkbench={openInstanceWorkbench}
+            onRefreshInstances={() => resourceRefresh.current?.()}
             onImport={(bundle) => void importWorkflow(bundle)}
             onValidate={(wf) => void action('validate', async () => {
               await validateGpuWorkflow(wf.id);

@@ -2,8 +2,37 @@
 
 .page { width: 100%; padding: 14px 16px 0; flex: 1; }
 .stack { display: grid; gap: 12px; align-content: start; min-width: 0; }
-.createWorkspace { display: grid; gap: 16px; align-content: start; min-width: 0; }
-.createRail, .createStage { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.createCenter { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.createStudioGrid, .createMainCol, .createSideCol { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.createJobNotice {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--bg); font-size: 0.8rem;
+}
+.createJobNotice[data-tone="active"] { border-color: var(--good-line); background: var(--good-bg); }
+.createJobNotice[data-tone="failed"] { border-color: var(--danger-line); }
+.createJobNoticeText { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.createJobNoticeActions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.settingsShell { display: grid; gap: 16px; align-content: start; min-width: 0; }
+.settingsSidebar {
+  display: grid; gap: 12px; min-width: 0; padding: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card);
+}
+.settingsSideHead { display: flex; align-items: center; gap: 8px; }
+.settingsSideHead h2 { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; font-weight: 650; margin: 0; }
+.settingsMenu { display: grid; gap: 4px; }
+.settingsMenuItem {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px;
+  border: 1px solid transparent; border-radius: var(--r-md); background: transparent;
+  color: var(--text-2); text-align: left; cursor: pointer;
+}
+.settingsMenuItem:hover { border-color: var(--line); background: var(--bg); color: var(--text); }
+.settingsMenuItem[data-active="true"] { border-color: var(--line-strong); background: var(--card-2); color: var(--text); }
+.settingsMenuItem > span { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.settingsMenuItem strong { font-size: 0.86rem; font-weight: 600; }
+.settingsMenuItem small { font-size: 0.72rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settingsSideFoot { padding-top: 8px; border-top: 1px solid var(--line); }
+.settingsContent { display: grid; gap: 14px; min-width: 0; align-content: start; }
 .railSection { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .railGroup { display: grid; gap: 10px; }
 .railAlert {
@@ -56,19 +85,22 @@
 .assetGroupTitle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; font-weight: 600; color: var(--text); }
 .assetGroupHeadActions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .assetRefGrid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px;
   padding: 4px; border: 1px dashed transparent; border-radius: var(--r-md);
 }
 .assetRefGrid[data-dragover="true"] { border-color: var(--primary); background: var(--card-2); }
 .assetSlotTile {
-  position: relative; display: grid; gap: 4px; padding: 4px;
+  position: relative; display: grid; gap: 4px; padding: 4px; min-width: 0;
   border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card);
 }
 .assetSlotThumb {
-  position: relative; display: block; width: 100%; aspect-ratio: 1; padding: 0;
-  border: none; border-radius: 6px; overflow: hidden; background: var(--card-2); cursor: pointer;
+  position: relative; display: block; width: 100%; aspect-ratio: 1 / 1; padding: 0;
+  border: none; border-radius: 8px; overflow: hidden; background: var(--card-2); cursor: pointer;
 }
-.assetSlotThumb .refMedia { width: 100%; height: 100%; object-fit: cover; display: block; }
+.assetSlotThumb img, .assetFrameThumbBtn img, .assetThumbImg {
+  position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%;
+  object-fit: contain; object-position: center; display: block;
+}
 .assetSlotBadge {
   position: absolute; top: 4px; left: 4px; padding: 1px 5px; border-radius: var(--r-full);
   background: var(--overlay); color: #fff; font-size: 0.68rem; font-weight: 600;
@@ -88,12 +120,13 @@
 }
 .assetTagChip:hover { border-color: var(--line-strong); color: var(--text); }
 .assetAddTile {
-  display: grid; grid-template-rows: 1fr auto; gap: 4px; min-height: 98px; padding: 4px;
+  display: grid; grid-template-rows: auto auto; gap: 4px; padding: 4px; align-content: start;
   border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--card);
 }
 .assetAddPrimary {
-  display: grid; place-items: center; padding: 4px; border: none; border-radius: 6px;
-  background: transparent; color: var(--text-2); font-size: 0.75rem; font-weight: 500;
+  display: grid; place-items: center; align-content: center; gap: 4px;
+  width: 100%; aspect-ratio: 1 / 1; padding: 6px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-2); font-size: 0.76rem; font-weight: 500;
   cursor: pointer; text-align: center;
 }
 .assetAddPrimary:hover { background: var(--card-2); color: var(--text); }
@@ -122,16 +155,23 @@
   border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--bg); text-align: center;
 }
 .assetUploadList { display: flex; flex-wrap: wrap; gap: 6px; }
-.assetPickerDialog { width: min(680px, 94vw); max-height: 82vh; overflow-y: auto; }
-.assetLibraryGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.assetPickerDialog { width: min(720px, 94vw); max-width: 720px; max-height: 84dvh; overflow-x: hidden; overflow-y: auto; }
+.assetLibraryGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; min-width: 0; }
 .assetLibraryTile {
-  position: relative; display: grid; gap: 4px; padding: 4px;
+  position: relative; display: grid; grid-template-rows: auto auto; gap: 6px; min-width: 0; width: 100%; padding: 6px;
   border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
-  color: var(--text-2); text-align: left; cursor: pointer;
+  color: var(--text-2); text-align: left; overflow: hidden; cursor: pointer;
 }
 .assetLibraryTile[data-selected="true"] { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); color: var(--text); }
-.assetLibraryTile .refMedia { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block; }
-.assetLibraryTile small { font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assetLibraryThumb {
+  position: relative; display: block; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 8px; overflow: hidden; background: var(--card-2);
+}
+.assetLibraryThumb img, .assetLibraryImg {
+  position: absolute; inset: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%;
+  object-fit: contain; object-position: center; display: block;
+}
+.assetLibraryName { display: block; font-size: 0.7rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 .stageHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .stageTitleGroup { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -507,19 +547,27 @@
     line-height: 1.25;
   }
   .subHead h2 { margin: 0; padding: 0; }
-  .createWorkspace {
-    grid-template-columns: minmax(392px, 432px) minmax(0, 1fr);
-    gap: 22px;
-    align-items: start;
-  }
-  .createStage { gap: 16px; }
+  .createCenter { max-width: 1140px; margin-inline: auto; display: grid; gap: 18px; }
+  .createStudioGrid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.88fr); gap: 20px; align-items: start; }
   .createSubmit {
     position: sticky;
     bottom: 14px;
     z-index: 5;
   }
-  .createWorkspace .card { padding: 14px; }
-  .promptCard textarea { min-height: 112px; }
+  .createCenter .card { padding: 14px; }
+  .promptCard textarea { min-height: 148px; }
+  .settingsShell { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 24px; align-items: start; }
+  .settingsSidebar {
+    position: sticky;
+    top: calc(var(--workspace-header) + 24px);
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--card);
+  }
+  .settingsContent { display: grid; gap: 16px; min-width: 0; max-width: 980px; }
   .refGrid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
   .stageGalleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 14px; }
   .browseToolbar {
@@ -557,7 +605,6 @@
 }
 
 @media (min-width: 1360px) {
-  .createWorkspace { grid-template-columns: minmax(408px, 444px) minmax(0, 1fr); }
   .galleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 236px), 1fr)); }
   .stageGalleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
 }

@@ -181,18 +181,20 @@ test('colabPipelineSteps reflects allocate, warm_reuse, restore_runtime, samplin
   );
 });
 
-test('PC workspace keeps ColabRuntimeBar, stays on Creation after submit, and deduplicates Settings', () => {
+test('PC workspace keeps ColabRuntimeBar, removes Colab 实时舞台, constrains ref images, and deduplicates Settings', () => {
   const app = readFileSync('src/App.tsx', 'utf8');
   const create = readFileSync('src/pages/CreatePage.tsx', 'utf8');
   const settings = readFileSync('src/pages/SettingsPage.tsx', 'utf8');
+  const slots = readFileSync('src/components/VisualAssetSlots.tsx', 'utf8');
 
   assert.match(app, /<ColabRuntimeBar\b/);
   assert.match(app, /replaceState/);
   const submitBlockMatch = app.match(/async function submitJob\(\)[\s\S]*?\n  \}/);
   assert.ok(submitBlockMatch, 'submitJob function should exist in App.tsx');
   assert.doesNotMatch(submitBlockMatch[0], /setTab\('任务'\)/);
-  assert.match(create, /createStage/);
-  assert.match(create, /colabPipelineSteps/);
+  assert.doesNotMatch(create, /Colab 实时舞台/);
+  assert.match(slots, /assetThumbImg/);
+  assert.match(slots, /assetLibraryImg/);
   assert.doesNotMatch(settings, /InstanceCenter/);
 });
 
@@ -240,7 +242,7 @@ test('fillAssetSlots and removeAndCompactAssetSlot manage ref slots and frame sl
   assert.deepEqual(frameCleared, { first_frame: '', last_frame: 'f2' });
 });
 
-test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, and duration presets without blind selects', async () => {
+async function loadSsrExports(contents, sourcefile) {
   const cssModuleStubPlugin = {
     name: 'css-module-stub',
     setup(buildApi) {
@@ -254,9 +256,9 @@ test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, an
 
   const ssrBundle = await build({
     stdin: {
-      contents: `export { CreatePanel } from './src/pages/CreatePage.tsx';`,
+      contents,
       resolveDir: webRoot,
-      sourcefile: 'create-panel-ssr-entry.ts',
+      sourcefile,
       loader: 'ts',
     },
     bundle: true,
@@ -273,10 +275,16 @@ test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, an
   const cjsMod = { exports: {} };
   const loader = new Function('exports', 'require', 'module', ssrBundle.outputFiles[0].text);
   loader(cjsMod.exports, requireFromWeb, cjsMod);
+  return cjsMod.exports;
+}
 
+test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, and duration presets without blind selects', async () => {
   const React = requireFromWeb('react');
   const { renderToStaticMarkup } = requireFromWeb('react-dom/server');
-  const { CreatePanel } = cjsMod.exports;
+  const { CreatePanel } = await loadSsrExports(
+    `export { CreatePanel } from './src/pages/CreatePage.tsx';`,
+    'create-panel-ssr-entry.ts',
+  );
 
   const refManifest = {
     model_id: 'minimax-h3',
@@ -365,6 +373,8 @@ test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, an
 
   assert.doesNotMatch(html, /id="gpu-ref_1"/);
   assert.doesNotMatch(html, /id="batch-mode-select"/);
+  assert.doesNotMatch(html, /Colab 实时舞台/);
+  assert.match(html, /class="assetThumbImg"/);
   assert.match(html, /MiniMax H3 多参考生视频/);
   assert.match(html, /<Picture 1>|&lt;Picture 1&gt;/);
   assert.match(html, /无接缝 VAE（推荐）/);
@@ -372,4 +382,59 @@ test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, an
   assert.match(html, /5秒/);
   assert.match(html, /15秒/);
   assert.match(html, /限时 60m/);
+});
+
+test('SettingsPanel SSR renders 5 secondary menu items and usage/resources panels', async () => {
+  const React = requireFromWeb('react');
+  const { renderToStaticMarkup } = requireFromWeb('react-dom/server');
+  const { SettingsPanel } = await loadSsrExports(
+    `export { SettingsPanel } from './src/pages/SettingsPage.tsx';`,
+    'settings-panel-ssr-entry.ts',
+  );
+  const noop = () => {};
+
+  const settingsBaseProps = {
+    settings: realSettings,
+    workflows: [],
+    error: '',
+    accounts: [usableAccount],
+    usage: { estimated_units: 12, actual_units: 8, daily_limit: 100, active_runtimes: 0 },
+    instances: [],
+    onImport: noop,
+    onValidate: noop,
+    onPublish: noop,
+    onRollback: noop,
+    onLogout: noop,
+    onBack: noop,
+  };
+
+  const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, 'window');
+  const prevWindow = globalThis.window;
+  globalThis.window = { location: { origin: 'http://localhost' } };
+  try {
+    const accountsHtml = renderToStaticMarkup(React.createElement(SettingsPanel, {
+      ...settingsBaseProps,
+      initialSection: 'accounts',
+    }));
+    for (const label of ['Google 账号设置', '工作流 + 模型设置', '外观设置', '算力用量', '资源管理']) {
+      assert.ok(accountsHtml.includes(label), `Settings menu missing ${label}`);
+    }
+
+    const usageHtml = renderToStaticMarkup(React.createElement(SettingsPanel, {
+      ...settingsBaseProps,
+      initialSection: 'usage',
+    }));
+    assert.match(usageHtml, /CU 用量/);
+    assert.match(usageHtml, /扣费对账/);
+
+    const resourcesHtml = renderToStaticMarkup(React.createElement(SettingsPanel, {
+      ...settingsBaseProps,
+      initialSection: 'resources',
+    }));
+    assert.match(resourcesHtml, /当前设备/);
+    assert.match(resourcesHtml, /当前没有实例/);
+  } finally {
+    if (hadWindow) globalThis.window = prevWindow;
+    else delete globalThis.window;
+  }
 });

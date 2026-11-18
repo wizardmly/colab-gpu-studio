@@ -60,7 +60,9 @@ export interface GpuJob {
   asset_ids?: string[];
   output_asset_ids?: string[];
   error?: string;
+  error_code?: string | null;
   error_message?: string;
+  max_runtime_minutes?: number | null;
   message?: string;
   progress?: number;
   idempotency_key?: string;
@@ -124,7 +126,7 @@ export interface GpuUsage {
   };
   [key: string]: unknown;
 }
-export interface GpuSettings { provider_default?: Provider; real_enabled?: boolean; google?: { colab?: { connected?: boolean; configured?: boolean; scopes?: string[] }; drive?: { connected?: boolean; configured?: boolean; scopes?: string[] } }; budget?: Record<string, unknown>; storage?: string; [key: string]: unknown; }
+export interface GpuSettings { offline_mode?: boolean; provider_default?: Provider; real_enabled?: boolean; google?: { colab?: { connected?: boolean; configured?: boolean; scopes?: string[] }; drive?: { connected?: boolean; configured?: boolean; scopes?: string[] } }; budget?: Record<string, unknown>; storage?: string; [key: string]: unknown; }
 export interface ComputeSpec {
   id?: string;
   name?: string;

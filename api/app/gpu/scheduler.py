@@ -52,6 +52,7 @@ MCP_MAX_COOLDOWN = 300
 _STAGE_TEXT = {
     "restore_env": "正在恢复运行环境",
     "restore_weights": "正在恢复模型文件",
+    "restore_runtime": "正在并行恢复运行环境和模型文件",
     "warm_reuse": "同一台机器已有模型，直接复用",
     "comfy_start": "正在启动 ComfyUI",
     "sampling": "采样中",
@@ -1637,7 +1638,10 @@ class Scheduler:
             "cleaning_up",
             "cleanup_pending",
         }:
-            return self._begin_failure(job, "gpu_timeout", "GPU job exceeded its runtime limit")
+            return self._begin_failure(
+                job, "gpu_timeout",
+                f"任务已到运行截止时间（任务上限 {self._effective_runtime(job)} 分钟，也受实例到期时间限制）。正在释放运行时。",
+            )
         state = job.get("state")
         if state == "queued":
             return self._set_state(job, "validating", "GPU job validating")

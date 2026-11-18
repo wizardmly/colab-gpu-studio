@@ -27,7 +27,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
@@ -538,6 +538,47 @@ def _validate_weights(manifest: dict) -> list[dict]:
     return checked
 
 
+_H3_REF2V_COMMIT = "2c75dc1b379a59e0880619d029607af5169a62ef"
+_H3_WEIGHT_INPUTS = {
+    "UNETLoader": ("unet_name", "diffusion_models"),
+    "CLIPLoader": ("clip_name", "text_encoders"),
+    "VAELoader": ("vae_name", "vae"),
+    "LoraLoaderModelOnly": ("lora_name", "loras"),
+    "MinimaxH3LatentUpscaler3DRefineHandoff": ("model_name", "latent_upscale_models"),
+}
+_H3_OTHER_NODES = {
+    "BasicGuider", "BasicScheduler", "CreateVideo", "KSamplerSelect", "LoadImage",
+    "MiniMaxH3ReferenceToVideo", "MiniMaxH3SigmaShift", "RandomNoise", "SamplerCustomAdvanced",
+    "SaveVideo", "VAEDecode", "VAEDecodeAudio",
+}
+
+
+def _h3_job_weights(
+    graph: dict, weights: list[dict], user_loras: list[dict]
+) -> list[dict]:
+    """Select dependencies from the bound graph of the reviewed H3 workflow."""
+    targets = {item["target"] for item in weights}
+    uploaded = {item.get("target") for item in user_loras}
+    used = set()
+    for node in graph.values():
+        kind = node["class_type"]
+        if kind in _H3_OTHER_NODES:
+            continue
+        if kind not in _H3_WEIGHT_INPUTS:
+            return weights
+        field, folder = _H3_WEIGHT_INPUTS[kind]
+        inputs = node.get("inputs")
+        name = inputs.get(field) if isinstance(inputs, dict) else None
+        if not isinstance(name, str):
+            return weights
+        target = f"{folder}/{name}"
+        if target in targets:
+            used.add(target)
+        elif kind != "LoraLoaderModelOnly" or name not in uploaded:
+            return weights
+    return [item for item in weights if item["target"] in used] if used else weights
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -676,9 +717,11 @@ def _unpack_env(archive: Path, root: Path, site: Path) -> None:
     removed = json.loads((stage / "env.json").read_text())["removed"]
     for name in removed:
         _remove(site / name)
-    for entry in (stage / "site").iterdir():
-        _remove(site / entry.name)
-        shutil.move(str(entry), str(site / entry.name))
+    staged_site = stage / "site"
+    if staged_site.is_dir():
+        for entry in staged_site.iterdir():
+            _remove(site / entry.name)
+            shutil.move(str(entry), str(site / entry.name))
     shutil.move(str(stage / "ComfyUI"), str(root / "ComfyUI"))
     shutil.rmtree(stage, ignore_errors=True)
 
@@ -707,7 +750,9 @@ def _warm_fingerprint(commit: str, custom_nodes: list[dict], weights: list[dict]
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
 
-def _warm_take(root: Path, fingerprint: str, custom_nodes: list[dict], weights: list[dict]) -> bool:
+def _warm_take(
+    root: Path, fingerprint: str, custom_nodes: list[dict], weights: list[dict], *, allow_missing: bool = False,
+) -> bool:
     """Move the previous job's restored ComfyUI tree into this job's root when it is the same environment.
 
     The marker is dropped while the tree is in use, so a job that dies mid-run can never leave a
@@ -725,6 +770,8 @@ def _warm_take(root: Path, fingerprint: str, custom_nodes: list[dict], weights: 
     models = tree / "models"
     for item in weights:
         path = models / item["target"]
+        if allow_missing and not path.exists():
+            continue  # another variant on this runtime may not have downloaded this file yet
         if not path.is_file() or (item.get("size") and path.stat().st_size != item["size"]):
             return False
     for node in custom_nodes:
@@ -777,9 +824,7 @@ def _restore_env(
             if entry:
                 _log("从 Drive 恢复环境缓存")
                 archive = root / "env.tar.gz"
-                cache.fetch(entry, archive)
-                if _hash_file(archive)[0] != entry["appProperties"]["sha256"]:
-                    raise WorkerError("env cache sha256 mismatch")
+                cache.fetch(entry, archive, sha256=entry["appProperties"]["sha256"])
                 _unpack_env(archive, root, site)
                 _log("环境缓存解包完成，正在校验")
                 archive.unlink(missing_ok=True)
@@ -787,10 +832,13 @@ def _restore_env(
                 _verify_custom_nodes(comfy, custom_nodes or [])
                 record.update(source="drive", seconds=round(time.time() - started, 1))
                 return record
+            _log(f"当前运行时未命中环境缓存 {key}")
         except Exception as exc:  # noqa: BLE001 - a broken cache falls back to a normal install
             record["cache_error"] = _safe_error(exc)[:200]
             _log(f"环境缓存恢复失败，开始重新安装 {_safe_error(exc)[:200]}")
             shutil.rmtree(comfy, ignore_errors=True)
+    else:
+        _log("未配置 Drive 环境缓存，开始安装运行环境")
     before = _site_state(site)
     _checkout_comfy(comfy, commit, timeout)
     _verify_checkout(comfy, commit)
@@ -929,26 +977,33 @@ class DriveCache:
             return entry
         return None
 
-    def fetch(self, entry: dict, destination: Path) -> None:
+    def fetch(self, entry: dict, destination: Path, *, sha256: str | None = None) -> None:
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         temporary = destination.with_name(destination.name + ".part")
-        digest = hashlib.md5(usedforsecurity=False)
+        md5 = hashlib.md5(usedforsecurity=False)
+        sha = hashlib.sha256() if sha256 is not None else None
         written = 0
         last_report = time.monotonic()
         _log(f"从 Drive 下载 {destination.name}，共 {entry['size']} 字节")
         url = f"{DRIVE_API}/files/{quote(entry['id'])}?alt=media"
-        with self._open("GET", url, timeout=300) as response, temporary.open("wb") as out:
-            for block in iter(lambda: response.read(8 * 1024 * 1024), b""):
-                out.write(block)
-                digest.update(block)
-                written += len(block)
-                if time.monotonic() - last_report >= 10:
-                    _log(f"Drive 下载 {destination.name}，{written}/{entry['size']} 字节")
-                    last_report = time.monotonic()
-        if written != int(entry["size"]) or digest.hexdigest() != entry.get("md5Checksum"):
+        try:
+            with self._open("GET", url, timeout=300) as response, temporary.open("wb") as out:
+                for block in iter(lambda: response.read(8 * 1024 * 1024), b""):
+                    out.write(block)
+                    md5.update(block)
+                    if sha is not None:
+                        sha.update(block)
+                    written += len(block)
+                    if time.monotonic() - last_report >= 10:
+                        _log(f"Drive 下载 {destination.name}，{written}/{entry['size']} 字节")
+                        last_report = time.monotonic()
+            if written != int(entry["size"]) or md5.hexdigest() != entry.get("md5Checksum"):
+                raise WorkerError("drive cached file failed size/md5 check")
+            if sha is not None and sha.hexdigest() != sha256:
+                raise WorkerError("env cache sha256 mismatch")
+            os.replace(temporary, destination)
+        finally:
             temporary.unlink(missing_ok=True)
-            raise WorkerError("drive cached file failed size/md5 check")
-        os.replace(temporary, destination)
         _log(f"Drive 下载完成 {destination.name}，{written} 字节")
 
     def store(self, target: str, source: Path, sha256: str, md5: str, size: int) -> None:
@@ -1049,7 +1104,8 @@ def _restore_user_loras(comfy: Path, files: list[dict], cache: DriveCache | None
 
 
 def _restore_weights(
-    comfy: Path, manifest: dict, timeout: float, cache: DriveCache | None, prep: bool
+    comfy: Path, manifest: dict, timeout: float, cache: DriveCache | None, prep: bool,
+    *, wait_for_env: Callable[[], Any] | None = None,
 ) -> list[dict]:
     """Bring every reviewed weight file in, four at a time."""
     checked = _validate_weights(manifest)
@@ -1136,6 +1192,8 @@ def _restore_weights(
             except Exception as exc:  # noqa: BLE001 - preserve explicit Drive failure
                 target.unlink(missing_ok=True)
                 raise WorkerError(f"Drive weight import failed: {_safe_error(exc)[:200]}") from exc
+        if wait_for_env is not None:
+            wait_for_env()
         try:
             from huggingface_hub import hf_hub_download
         except Exception as exc:
@@ -1235,6 +1293,33 @@ def _stream_output(response, target: Path, limit: int) -> int:
         partial.unlink(missing_ok=True)
 
 
+def _restore_comfy(
+    root: Path, payload: dict, manifest: dict, commit: str, nodes: list[dict], timeout: float, stages: _Stages,
+) -> tuple[dict, list[dict]]:
+    comfy = root / "ComfyUI"
+    model_cache = _drive_cache(payload)
+    env_cache = _drive_cache(payload, "runtime_folder_id")
+    if model_cache is None:
+        stages.start("restore_env")
+        env = _restore_env(root, commit, timeout, env_cache, build=False, custom_nodes=nodes)
+        stages.start("restore_weights")
+        return env, _restore_weights(comfy, manifest, timeout, None, prep=False)
+
+    stages.start("restore_runtime")
+    # The environment can replace ComfyUI. Keep downloads outside it until both are ready.
+    with tempfile.TemporaryDirectory(prefix=".weights-", dir=root) as staging:
+        staged = Path(staging)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            env_ready = pool.submit(_restore_env, root, commit, timeout, env_cache, build=False, custom_nodes=nodes)
+            weights = _restore_weights(
+                staged, manifest, timeout, model_cache, prep=False, wait_for_env=env_ready.result,
+            )
+            env = env_ready.result()
+        # Both directories are on the same filesystem. Install the files without copying them again.
+        shutil.copytree(staged / "models", comfy / "models", dirs_exist_ok=True, copy_function=os.replace)
+    return env, weights
+
+
 def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _Stages) -> list[dict]:
     commit = manifest.get("comfy_commit", manifest.get("comfy_version"))
     if not isinstance(commit, str) or not COMMIT.fullmatch(commit):
@@ -1246,24 +1331,38 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
         if not isinstance(node, dict) or node.get("class_type") not in allowlist:
             raise WorkerError("bound graph contains an unreviewed node")
     comfy = root / "ComfyUI"
-    _check_loras(graph, manifest, (payload.get("snapshot") or {}).get("lora_files") or [])
+    user_loras = (payload.get("snapshot") or {}).get("lora_files") or []
+    _check_loras(graph, manifest, user_loras)
     timeout = min(float(payload.get("download_timeout_seconds", 600)), 600)
     nodes = _reviewed_custom_nodes(manifest.get("custom_nodes"))
     checked = _validate_weights(manifest)
+    h3 = commit.lower() == _H3_REF2V_COMMIT and manifest.get("workflow_key") == "minimax-h3-ref2v"
+    selected = _h3_job_weights(graph, checked, user_loras) if h3 else checked
+    if len(selected) < len(checked):
+        saved_bytes = sum(w["size"] or 0 for w in checked) - sum(w["size"] or 0 for w in selected)
+        _log(f"本任务恢复 {len(selected)}/{len(checked)} 个模型文件，跳过 {saved_bytes} 字节")
+        manifest = {**manifest, "weight_files": selected}
+    # Use the full lock for a warm tree so other modes can reuse shared files safely.
     fingerprint = _warm_fingerprint(commit, nodes, checked)
-    if _warm_take(root, fingerprint, nodes, checked):
-        # Same runtime, same environment: the previous job left it restored. Nothing to download.
-        stages.start("warm_reuse")
+    if _warm_take(root, fingerprint, nodes, selected, allow_missing=h3):
         env = {"source": "warm"}
-        weights = [{"target": w["target"], "sha256": w["sha256"], "source": "warm", "seconds": 0.0} for w in checked]
+        weights, missing = [], []
+        for item in selected:
+            if (comfy / "models" / item["target"]).is_file():
+                weights.append({"target": item["target"], "sha256": item["sha256"], "source": "warm", "seconds": 0.0})
+            else:
+                missing.append(item)
+        if missing:
+            _log(f"复用已有环境和 {len(weights)} 个模型文件，补齐 {len(missing)} 个模型文件")
+            stages.start("restore_weights")
+            weights.extend(_restore_weights(
+                comfy, {**manifest, "weight_files": missing}, timeout, _drive_cache(payload), prep=False,
+            ))
+        else:
+            stages.start("warm_reuse")
     else:
-        stages.start("restore_env")
-        env = _restore_env(root, commit, timeout, _drive_cache(payload, "runtime_folder_id"), build=False,
-                           custom_nodes=nodes)
-        stages.start("restore_weights")
-        weights = _restore_weights(comfy, manifest, timeout, _drive_cache(payload), prep=False)
+        env, weights = _restore_comfy(root, payload, manifest, commit, nodes, timeout, stages)
     try:
-        user_loras = (payload.get("snapshot") or {}).get("lora_files") or []
         if user_loras:
             stages.start("restore_loras")
             _restore_user_loras(comfy, user_loras, _drive_cache(payload))

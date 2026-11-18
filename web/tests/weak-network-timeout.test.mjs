@@ -106,21 +106,26 @@ test('smokeIdempotencyKey rotates after a terminal failed smoke job instead of r
   assert.equal(smokeIdempotencyKey('wf-1', 'proj-1', [], 'failed-job-0325'), afterFailed);
 });
 
-test('rankColabGpuSpecs prefers A100 first, then falls back to T4/L4 without downgrading L4 video to T4', () => {
+test('rankColabGpuSpecs preserves eligible machine-list order and matches exact requested key', () => {
   const a100 = { key: { variant: 'VARIANT_GPU', accelerator: 'A100', shape: 'SHAPE_HIGHMEM' }, eligible: true };
   const t4High = { key: { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }, eligible: true };
   const l4 = { key: { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }, eligible: true };
+  const l4Spec = { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' };
 
   assert.deepEqual(
-    selectEligibleColabGpuSpec([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
-    a100,
+    selectEligibleColabGpuSpec([t4High, a100, l4]),
+    t4High,
   );
   assert.deepEqual(
-    rankColabGpuSpecs([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'T4', shape: 'SHAPE_HIGHMEM' }),
-    [a100, t4High, l4],
+    rankColabGpuSpecs([t4High, a100, l4]),
+    [t4High, a100, l4],
   );
   assert.deepEqual(
-    rankColabGpuSpecs([t4High, a100, l4], { variant: 'VARIANT_GPU', accelerator: 'L4', shape: 'SHAPE_STANDARD' }),
-    [a100, l4],
+    rankColabGpuSpecs([t4High, a100, l4], l4Spec),
+    [l4],
+  );
+  assert.deepEqual(
+    selectEligibleColabGpuSpec([t4High, a100, l4], l4Spec),
+    l4,
   );
 });

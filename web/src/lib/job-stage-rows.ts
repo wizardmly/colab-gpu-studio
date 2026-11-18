@@ -1,7 +1,8 @@
 const stages: Array<[string, string]> = [
   ['queued', '排队等待'], ['queue', '排队等待'], ['prep_cache', '准备共享缓存'],
   ['allocate', '分配算力'], ['restore_env', '恢复运行环境'],
-  ['restore_weights', '恢复模型权重'], ['warm_reuse', '复用已就绪环境'],
+  ['restore_weights', '恢复模型权重'], ['restore_runtime', '并行恢复环境与模型'],
+  ['warm_reuse', '复用已就绪环境'],
   ['start_comfy', '启动 ComfyUI'], ['comfy_start', '启动 ComfyUI'],
   ['sampling', '采样生成'], ['upload', '保存产物'], ['cleanup', '释放算力'], ['delete', '释放算力'],
   ['prep_env', '准备运行环境'], ['prep_weights', '准备模型权重'],

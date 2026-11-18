@@ -199,6 +199,8 @@ export function TasksPanel({
             const done = DONE.includes(s);
             const running = RUNNING.includes(s);
             const failed = FAILED.includes(s);
+            const canAdjustTimeout = job.provider === 'colab' && job.error_code === 'gpu_timeout'
+              && !job.prep && Boolean(job.resolved_params || job.params);
             const waiting = WAITING.includes(s);
             const awaitingPrep = s === 'waiting_for_capacity' && job.awaiting_prep === true;
             const video = /i2v|video|ref2v|t2v/i.test(job.workflow_key || '');
@@ -257,7 +259,7 @@ export function TasksPanel({
                     </button>
                   ) : (
                     <button className={`button secondary small ${styles.jobMainAction}`} type="button" disabled={Boolean(busy)} onClick={() => onRetry(job.id)}>
-                      <RotateCcw size={13} strokeWidth={1.8} aria-hidden />{failed ? '重试' : '再来一次'}
+                      <RotateCcw size={13} strokeWidth={1.8} aria-hidden />{canAdjustTimeout ? '调整参数' : failed ? '重试' : '再来一次'}
                     </button>
                   )}
                   {terminalStates.has(s) && onArchive && <button className="button secondary small" type="button" disabled={Boolean(busy)} onClick={() => void archive(job)}>

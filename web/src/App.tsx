@@ -3,7 +3,7 @@ import { GalleryPanel } from './pages/GalleryPage';
 import { TasksPanel } from './pages/JobsPage';
 import { CreatePanel, type RuntimeChoice } from './pages/CreatePage';
 import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Sparkles, Zap, Image as ImageIcon, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
+import { Sparkles, Zap, Image as ImageIcon, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle, LogOut } from 'lucide-react';
 import {
   apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset,
   apiFetch,
@@ -959,6 +959,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [viewer, detail, stopTarget, confirm, showProjectSheet, showNewProject]);
 
+  function handleLogout() {
+    sessionStorage.removeItem('colab-gpu-studio-token');
+    setLoggedIn(false);
+  }
+
   if (!loggedIn) {
     return <Login onLoggedIn={() => { setLoggedIn(true); setLoginRefresh((c) => c + 1); }} />;
   }
@@ -1030,6 +1035,12 @@ export default function App() {
             </button>
           );
         })}
+        <div className="navLogoutWrap">
+          <button type="button" className="navLogoutBtn" onClick={handleLogout}>
+            <LogOut size={18} strokeWidth={1.6} aria-hidden />
+            <span>退出登录</span>
+          </button>
+        </div>
       </nav>
 
       {/* 项目切换弹层 */}
@@ -1177,10 +1188,7 @@ export default function App() {
             }}
             onUseProject={(id) => { chooseProject(id); setTab('任务'); }}
             onActivated={() => { void getGpuWorkflows().then(setWorkflows); void getGpuModels().then(setModels).catch(() => undefined); }}
-            onLogout={() => {
-              sessionStorage.removeItem('colab-gpu-studio-token');
-              setLoggedIn(false);
-            }}
+            onLogout={handleLogout}
             onBack={() => setTab('创作')}
           />
         )}

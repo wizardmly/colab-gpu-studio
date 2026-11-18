@@ -188,6 +188,7 @@ test('PC workspace keeps ColabRuntimeBar, removes Colab 实时舞台, constrains
   const slots = readFileSync('src/components/VisualAssetSlots.tsx', 'utf8');
 
   assert.match(app, /<ColabRuntimeBar\b/);
+  assert.match(app, /navLogoutBtn/);
   assert.match(app, /replaceState/);
   const submitBlockMatch = app.match(/async function submitJob\(\)[\s\S]*?\n  \}/);
   assert.ok(submitBlockMatch, 'submitJob function should exist in App.tsx');
@@ -374,6 +375,10 @@ test('CreatePanel SSR renders visual ref slots, non-advanced video_vae chips, an
   assert.doesNotMatch(html, /id="gpu-ref_1"/);
   assert.doesNotMatch(html, /id="batch-mode-select"/);
   assert.doesNotMatch(html, /Colab 实时舞台/);
+  assert.match(html, /aria-label="创作类型"/);
+  assert.match(html, /图片生成/);
+  assert.match(html, /视频生成/);
+  assert.match(html, /模型选择/);
   assert.match(html, /class="assetThumbImg"/);
   assert.match(html, /MiniMax H3 多参考生视频/);
   assert.match(html, /<Picture 1>|&lt;Picture 1&gt;/);

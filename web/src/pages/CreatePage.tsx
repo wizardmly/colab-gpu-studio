@@ -160,6 +160,8 @@ export function CreatePanel({
   const activeWorkflow = workflows.find((item) => item.id === workflowId);
   const currentFamily = activeWorkflow ? families.find((f) => f.key === activeWorkflow.workflow_key) : undefined;
   const category: Category = currentFamily?.category || 'image';
+  const imageFamilyCount = useMemo(() => families.filter((f) => f.category === 'image').length, [families]);
+  const videoFamilyCount = useMemo(() => families.filter((f) => f.category === 'video').length, [families]);
   const categoryFamilies = families.filter((f) => f.category === category);
   const pickable = (fam: typeof families[number]) => fam.items.some((i) => i.state === 'published') ? fam.items.filter((i) => i.state === 'published') : fam.items;
   const activeVersions = currentFamily ? pickable(currentFamily) : [];
@@ -273,19 +275,87 @@ export function CreatePanel({
   }
 
   return (
-    <div className={styles.createCenter}>
-      {/* ───── 顶部紧凑工作流与状态条 ───── */}
-      <Card className={styles.composerCard}>
-        <div className={styles.composerTop}>
-          <Segmented<Category>
-            ariaLabel="创作类型"
-            value={category}
-            onChange={switchCategory}
-            options={[
-              { value: 'image', label: '图片生成', icon: <ImageIcon size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'image') },
-              { value: 'video', label: '视频生成', icon: <Film size={15} strokeWidth={1.6} aria-hidden />, disabled: !families.some((f) => f.category === 'video') },
-            ]}
-          />
+    <div className={styles.createShell}>
+      {/* ───── 左侧创作类型二级菜单栏 ───── */}
+      <aside className={styles.createSidebar}>
+        <div className={styles.settingsSideHead}>
+          <h2><Sparkles size={18} strokeWidth={1.6} aria-hidden />创作模式</h2>
+        </div>
+        <nav className={`${styles.settingsMenu} ${styles.createModeMenu}`} aria-label="创作类型">
+          <button
+            type="button"
+            className={styles.settingsMenuItem}
+            disabled={imageFamilyCount === 0}
+            data-active={category === 'image' || undefined}
+            aria-current={category === 'image' ? 'page' : undefined}
+            onClick={() => switchCategory('image')}
+          >
+            <ImageIcon size={17} strokeWidth={1.6} aria-hidden />
+            <span>
+              <strong>图片生成</strong>
+              <small>{imageFamilyCount > 0 ? `${imageFamilyCount} 个可用模型` : '暂未启用'}</small>
+            </span>
+          </button>
+          <button
+            type="button"
+            className={styles.settingsMenuItem}
+            disabled={videoFamilyCount === 0}
+            data-active={category === 'video' || undefined}
+            aria-current={category === 'video' ? 'page' : undefined}
+            onClick={() => switchCategory('video')}
+          >
+            <Film size={17} strokeWidth={1.6} aria-hidden />
+            <span>
+              <strong>视频生成</strong>
+              <small>{videoFamilyCount > 0 ? `${videoFamilyCount} 个可用模型` : '暂未启用'}</small>
+            </span>
+          </button>
+        </nav>
+      </aside>
+
+      {/* ───── 右侧创作主区：顶部模型栏 + 下方参数双栏 ───── */}
+      <div className={styles.createMainArea}>
+      <Card className={`${styles.composerCard} ${styles.modelTopBar}`}>
+        <div className={styles.modelBarRow}>
+          <div className={styles.modelBarLeft}>
+            <span className={styles.modelBarLabel}>模型选择</span>
+            {categoryFamilies.length > 0 ? (
+              <div className={styles.wfPillRow} role="group" aria-label="切换工作流">
+                {categoryFamilies.map((fam) => {
+                  const list = pickable(fam);
+                  const sample = list.find((item) => item.active) || list[0] || { workflow_key: fam.key };
+                  const active = currentFamily?.key === fam.key;
+                  const accel = specBadgeText((sample as GpuWorkflow).manifest);
+                  return (
+                    <button
+                      key={fam.key}
+                      type="button"
+                      className={styles.wfPill}
+                      data-active={active || undefined}
+                      aria-pressed={active}
+                      onClick={() => chooseFamily(fam)}
+                    >
+                      <span className={styles.wfPillTitle}>{workflowTitle(sample)}</span>
+                      {accel && <em className={styles.wfPillSpec}>{accel}</em>}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <span className="muted small">还没有可用的工作流，请先到「设置 › 工作流 + 模型设置」启用。</span>
+            )}
+
+            {activeVersions.length > 1 && (
+              <div className={styles.versionRow} style={{ padding: 0 }} role="group" aria-label="切换工作流版本">
+                {activeVersions.map((wf) => (
+                  <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => chooseWorkflow(wf)}>
+                    v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className={styles.composerMetaActions}>
             <button
               type="button"
@@ -308,42 +378,6 @@ export function CreatePanel({
             )}
           </div>
         </div>
-
-        {categoryFamilies.length > 0 ? (
-          <div className={styles.wfPillRow} role="group" aria-label="切换工作流">
-            {categoryFamilies.map((fam) => {
-              const list = pickable(fam);
-              const sample = list.find((item) => item.active) || list[0] || { workflow_key: fam.key };
-              const active = currentFamily?.key === fam.key;
-              const accel = specBadgeText((sample as GpuWorkflow).manifest);
-              return (
-                <button
-                  key={fam.key}
-                  type="button"
-                  className={styles.wfPill}
-                  data-active={active || undefined}
-                  aria-pressed={active}
-                  onClick={() => chooseFamily(fam)}
-                >
-                  <span className={styles.wfPillTitle}>{workflowTitle(sample)}</span>
-                  {accel && <em className={styles.wfPillSpec}>{accel}</em>}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="muted small">还没有可用的工作流，请先到「设置 › 工作流 + 模型设置」启用。</p>
-        )}
-
-        {activeVersions.length > 1 && (
-          <div className={styles.versionRow} style={{ padding: 0 }} role="group" aria-label="切换工作流版本">
-            {activeVersions.map((wf) => (
-              <button key={wf.id} type="button" data-active={wf.id === workflowId} onClick={() => chooseWorkflow(wf)}>
-                v{wf.workflow_version}{wf.active ? ' · 当前' : ''}
-              </button>
-            ))}
-          </div>
-        )}
 
         {workflowUnpublished && (
           <div className={styles.railAlert}>
@@ -713,6 +747,7 @@ export function CreatePanel({
           </button>
         </div>
         </div>
+      </div>
       </div>
     </div>
   );

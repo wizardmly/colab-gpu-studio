@@ -2,7 +2,16 @@
 
 .page { width: 100%; padding: 14px 16px 0; flex: 1; }
 .stack { display: grid; gap: 12px; align-content: start; min-width: 0; }
-.createCenter { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.createShell, .settingsShell { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.createSidebar, .settingsSidebar {
+  display: grid; gap: 12px; min-width: 0; padding: 12px;
+  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card);
+}
+.createModeMenu { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.createMainArea { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.modelBarRow { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.modelBarLeft { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.modelBarLabel { font-size: 0.82rem; font-weight: 600; color: var(--text-2); white-space: nowrap; }
 .createStudioGrid, .createMainCol, .createSideCol { display: grid; gap: 14px; align-content: start; min-width: 0; }
 .createJobNotice {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
@@ -13,11 +22,6 @@
 .createJobNotice[data-tone="failed"] { border-color: var(--danger-line); }
 .createJobNoticeText { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; flex: 1; }
 .createJobNoticeActions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.settingsShell { display: grid; gap: 16px; align-content: start; min-width: 0; }
-.settingsSidebar {
-  display: grid; gap: 12px; min-width: 0; padding: 12px;
-  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--card);
-}
 .settingsSideHead { display: flex; align-items: center; gap: 8px; }
 .settingsSideHead h2 { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; font-weight: 650; margin: 0; }
 .settingsMenu { display: grid; gap: 4px; }
@@ -26,7 +30,8 @@
   border: 1px solid transparent; border-radius: var(--r-md); background: transparent;
   color: var(--text-2); text-align: left; cursor: pointer;
 }
-.settingsMenuItem:hover { border-color: var(--line); background: var(--bg); color: var(--text); }
+.settingsMenuItem:hover:not(:disabled) { border-color: var(--line); background: var(--bg); color: var(--text); }
+.settingsMenuItem:disabled { opacity: 0.45; cursor: not-allowed; }
 .settingsMenuItem[data-active="true"] { border-color: var(--line-strong); background: var(--card-2); color: var(--text); }
 .settingsMenuItem > span { display: grid; gap: 1px; flex: 1; min-width: 0; }
 .settingsMenuItem strong { font-size: 0.86rem; font-weight: 600; }
@@ -41,9 +46,9 @@
   background: var(--warn-bg);
 }
 .createSubmit {
-  display: grid; gap: 8px; padding: 10px 12px;
+  display: grid; gap: 8px; padding: 12px;
   border: 1px solid var(--line-strong); border-radius: var(--r-lg);
-  background: var(--card); box-shadow: 0 10px 28px var(--overlay);
+  background: var(--card); box-shadow: none;
 }
 .submitMeta { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .submitMeta [data-warn="true"] { color: var(--warn); }
@@ -52,16 +57,16 @@
 .composerMetaActions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .wfPillRow { display: flex; flex-wrap: wrap; gap: 6px; }
 .wfPill {
-  display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 10px;
+  display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 5px 12px;
   border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
-  color: var(--text-2); font-size: 0.78rem; cursor: pointer;
+  color: var(--text-2); font-size: 0.82rem; cursor: pointer;
 }
 .wfPill:hover { border-color: var(--line-strong); color: var(--text); }
 .wfPill[data-active="true"] {
   border-color: var(--text); background: var(--card-2); color: var(--text);
   box-shadow: inset 0 0 0 1px var(--text); font-weight: 600;
 }
-.wfPillTitle { max-width: 172px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfPillTitle { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wfPillSpec { font-size: 0.7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .wfPill[data-active="true"] .wfPillSpec { color: var(--text-2); }
 .submitMetaActions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -547,17 +552,13 @@
     line-height: 1.25;
   }
   .subHead h2 { margin: 0; padding: 0; }
-  .createCenter { max-width: 1140px; margin-inline: auto; display: grid; gap: 18px; }
-  .createStudioGrid { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(360px, 0.88fr); gap: 20px; align-items: start; }
-  .createSubmit {
-    position: sticky;
-    bottom: 14px;
-    z-index: 5;
+  .createShell, .settingsShell {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 24px;
+    align-items: start;
   }
-  .createCenter .card { padding: 14px; }
-  .promptCard textarea { min-height: 148px; }
-  .settingsShell { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 24px; align-items: start; }
-  .settingsSidebar {
+  .createSidebar, .settingsSidebar {
     position: sticky;
     top: calc(var(--workspace-header) + 24px);
     display: grid;
@@ -567,6 +568,11 @@
     border-radius: var(--r-lg);
     background: var(--card);
   }
+  .createModeMenu { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .createMainArea { display: grid; gap: 18px; min-width: 0; }
+  .createShell .card { padding: 14px; }
+  .promptCard textarea { min-height: 148px; }
+  .settingsSideFoot { display: none; }
   .settingsContent { display: grid; gap: 16px; min-width: 0; max-width: 980px; }
   .refGrid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
   .stageGalleryGrid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 14px; }
@@ -602,6 +608,15 @@
   .detailDialog { width: min(880px, calc(100vw - 64px)); max-width: none; padding: 22px; }
   .viewerDialog { width: min(1120px, calc(100vw - 64px)); max-width: none; padding: 22px; }
   .viewerImage, .viewerVideo { max-height: 70dvh; }
+}
+
+@media (min-width: 1220px) {
+  .createStudioGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.12fr) minmax(350px, 0.92fr);
+    gap: 20px;
+    align-items: start;
+  }
 }
 
 @media (min-width: 1360px) {

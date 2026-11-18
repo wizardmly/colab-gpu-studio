@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, ChevronLeft, Monitor, Plug, Cpu, Layers, LogOut, Sparkles, HardDrive } from 'lucide-react';
+import { Monitor, Plug, Cpu, Layers, LogOut, Sparkles, HardDrive } from 'lucide-react';
 import { WorkflowsPanel } from './WorkflowManager';
 import { ComputeResourcesSection, ComputeUsageSection, ThemePicker } from './ComputePage';
 import type { ComputeSpec, GpuSettings, GpuUsage, GpuWorkflow } from '../lib/gpu-api';
@@ -17,7 +17,7 @@ export function SettingsPanel({
   projectId = '', projectTitle = '', initialSection, initialView = 'main',
   oauthJustConnected = false, hasUsableColab = false,
   onGoCreate, onCheckGpu, onStopCompute, onContinueInstance, onOpenWorkbench, onRefreshInstances,
-  onImport, onValidate, onPublish, onRollback, onDeactivate, onActivated, onOpenJob, onUseProject, onLogout, onBack,
+  onImport, onValidate, onPublish, onRollback, onDeactivate, onActivated, onOpenJob, onUseProject, onLogout,
 }: {
   settings: GpuSettings | null;
   workflows: GpuWorkflow[];
@@ -126,15 +126,6 @@ export function SettingsPanel({
   return (
     <div className={styles.settingsShell}>
       <aside className={styles.settingsSidebar}>
-        <div className={styles.settingsSideHead}>
-          {onBack && (
-            <button type="button" className={styles.backBtn} onClick={onBack}>
-              <ChevronLeft size={17} strokeWidth={1.6} aria-hidden />返回
-            </button>
-          )}
-          <h2><Settings size={19} strokeWidth={1.6} aria-hidden />设置</h2>
-        </div>
-
         <nav className={styles.settingsMenu} aria-label="设置二级菜单">
           {menuItems.map((item) => {
             const Icon = item.icon;

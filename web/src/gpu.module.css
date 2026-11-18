@@ -162,11 +162,26 @@
 .searchBox:focus-within { border-color: var(--text); }
 .searchBox input { border: 0; background: transparent; padding: 0; min-height: 42px; }
 .searchBox input:focus { border: 0; }
-.filterBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.filterBar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .chipRow { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { display: inline-flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--r-full); background: transparent; color: var(--text-2); font-size: 0.84rem; }
 .chip[data-active="true"] { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
-.miniSelect { width: auto; min-height: 34px; padding: 0 28px 0 10px; font-size: 0.8rem; border-radius: var(--r-full); background-color: transparent; border-color: var(--line-strong); }
+.statusFilter { position: relative; margin-inline-start: auto; }
+.statusFilter [aria-expanded="true"] > svg { transform: rotate(180deg); }
+.statusMenu {
+  position: absolute; z-index: 20; inset-inline-end: 0; top: calc(100% + 6px);
+  width: 11rem; max-width: calc(100vw - 32px); max-height: 45vh; overflow: auto;
+  padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--card); color: var(--text); box-shadow: 0 8px 22px var(--overlay);
+}
+.statusOption {
+  display: flex; width: 100%; min-height: 40px; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 6px 10px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); text-align: start; font-size: 0.86rem;
+}
+.statusOption:hover, .statusOption:focus-visible { background: var(--card-2); }
+.statusOption[aria-pressed="true"] { background: var(--card-3); font-weight: 600; }
+.statusOption > svg { flex: none; }
 .banner { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--card); text-align: left; font-size: 0.86rem; }
 .banner span { flex: 1; }
 .list { display: grid; gap: 10px; }

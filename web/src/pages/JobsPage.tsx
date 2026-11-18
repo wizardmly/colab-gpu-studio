@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { Zap, Search, RefreshCw, Image as ImageIcon, Film, Loader, ChevronRight, Square, RotateCcw, Archive, ArchiveRestore } from 'lucide-react';
+import { useState, useMemo, useEffect, useId, useRef } from 'react';
+import { Zap, Search, RefreshCw, Image as ImageIcon, Film, Loader, ChevronDown, ChevronRight, Check, Square, RotateCcw, Archive, ArchiveRestore } from 'lucide-react';
 import { apiMessage, type GpuJob } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 import { formatDateTime, jobSize, progressPercent, readableState, terminalStates } from '../lib/ui-helpers';
@@ -12,7 +12,7 @@ const RUNNING = ['preparing', 'loading', 'running', 'uploading', 'cleaning_up', 
 const DONE = ['completed', 'succeeded'];
 const FAILED = ['failed', 'failed_final', 'cancelled', 'cancelled_local', 'blocked'];
 
-type Filter = 'all' | 'running' | 'completed' | string;
+const PRIMARY_FILTERS = ['all', 'running', 'completed'];
 
 export function TasksPanel({
   jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance, onArchive, onRelease,
@@ -29,7 +29,11 @@ export function TasksPanel({
   onArchive?: (job: GpuJob, archived: boolean) => Promise<unknown>;
   onRelease?: (job: GpuJob) => Promise<unknown>;
 }) {
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilter] = useState('all');
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const statusMenuId = useId();
+  const statusFilterRef = useRef<HTMLDivElement>(null);
+  const statusTriggerRef = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(30);
   const [busy, setBusy] = useState('');
@@ -56,18 +60,43 @@ export function TasksPanel({
     archived: uniqueJobs.filter((job) => job.archived_at).length,
   }), [uniqueJobs]);
 
+  const usesExtraFilter = !PRIMARY_FILTERS.includes(filter);
+  const extraStates = new Set(uniqueJobs.filter((job) => !job.archived_at).map(stateOf));
+  if (usesExtraFilter) extraStates.add(filter);
+  const statusOptions = [
+    { value: 'archived', label: `已归档 ${counts.archived}` },
+    ...Array.from(extraStates)
+      .filter((state) => state !== 'archived' && !PRIMARY_FILTERS.includes(state))
+      .map((state) => ({ value: state, label: jobStateLabel(state) })),
+  ];
+  const selectedStatus = statusOptions.find((option) => option.value === filter);
+
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (!statusFilterRef.current?.contains(event.target as Node)) setStatusMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', dismissOutside, true);
+    return () => document.removeEventListener('pointerdown', dismissOutside, true);
+  }, [statusMenuOpen]);
+
   const filtered = uniqueJobs.filter((job) => {
     const s = stateOf(job);
     if (Boolean(job.archived_at) !== (filter === 'archived')) return false;
     if (filter === 'running' && !isActive(job)) return false;
     if (filter === 'completed' && !DONE.includes(s)) return false;
-    if (!['all', 'running', 'completed', 'archived'].includes(filter) && s !== filter) return false;
+    if (usesExtraFilter && filter !== 'archived' && s !== filter) return false;
     return `${job.workflow_key || ''} ${job.id}`.toLowerCase().includes(query.toLowerCase());
   });
 
-  const chip = (value: Filter, label: string) => (
-    <button type="button" className={styles.chip} data-active={filter === value} onClick={() => setFilter(value)}>{label}</button>
+  const chip = (value: string, label: string) => (
+    <button type="button" className={styles.chip} data-active={filter === value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
   );
+
+  function closeStatusMenu() {
+    setStatusMenuOpen(false);
+    statusTriggerRef.current?.focus();
+  }
 
   async function archive(job: GpuJob) {
     if (!onArchive || busy) return;
@@ -120,11 +149,35 @@ export function TasksPanel({
           {chip('running', `进行中 ${counts.running}`)}
           {chip('completed', `已完成 ${counts.completed}`)}
         </div>
-        <select aria-label="按状态筛选" className={styles.miniSelect} value={['all', 'running', 'completed'].includes(filter) ? '' : filter} onChange={(e) => setFilter(e.target.value || 'all')}>
-          <option value="">更多状态</option>
-          <option value="archived">已归档 {counts.archived}</option>
-          {[...new Set(uniqueJobs.filter((job) => !job.archived_at).map(stateOf))].map((state) => <option value={state} key={state}>{jobStateLabel(state)}</option>)}
-        </select>
+        <div className={styles.statusFilter} ref={statusFilterRef}
+          onBlur={(event) => {
+            if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setStatusMenuOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (statusMenuOpen && event.key === 'Escape') {
+              event.stopPropagation();
+              closeStatusMenu();
+            }
+          }}
+        >
+          <button type="button" className={styles.chip} ref={statusTriggerRef}
+            data-active={usesExtraFilter} aria-expanded={statusMenuOpen} aria-controls={statusMenuId}
+            onClick={() => setStatusMenuOpen((open) => !open)}
+          >
+            {selectedStatus?.label ?? '更多状态'}
+            <ChevronDown size={14} aria-hidden />
+          </button>
+          <div id={statusMenuId} role="group" aria-label="按状态筛选" className={styles.statusMenu} hidden={!statusMenuOpen}>
+            {statusOptions.map(({ value, label }) => (
+              <button key={value} type="button" className={styles.statusOption} aria-pressed={filter === value}
+                onClick={() => { setFilter(value); setLimit(30); closeStatusMenu(); }}
+              >
+                <span>{label}</span>
+                {filter === value && <Check size={15} aria-hidden />}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {counts.running > 0 && filter !== 'running' && (
@@ -220,7 +273,7 @@ export function TasksPanel({
       ) : (
         <div className="empty">
           <strong>{filter === 'archived' ? '没有已归档任务' : uniqueJobs.length ? '当前筛选没有任务' : '还没有任务'}</strong>
-          <span>{filter === 'archived' ? '已结束任务归档后会显示在这里。' : counts.archived > 0 ? '可在“更多状态”中选择“已归档”查看历史任务。' : '在「创作」里点「立即生成」，任务会出现在这里。'}</span>
+          <span>{filter === 'archived' ? '已结束任务归档后会显示在这里。' : counts.archived > 0 ? '在状态菜单中选择“已归档”查看历史任务。' : '在「创作」里点「立即生成」，任务会出现在这里。'}</span>
         </div>
       )}
 

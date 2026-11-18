@@ -64,6 +64,8 @@ def public_job(job, *, include_runtime_logs=False):
         "retained_until",
         "selection_reason",
         "poll_retry_count",
+        "mcp_rate_limited",
+        "poll_retry_at",
     }
     result = {k: v for k, v in job.items() if k in keys}
     if include_runtime_logs:

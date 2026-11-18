@@ -3,11 +3,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 import uuid
+from email.utils import formatdate
 
 import httpx
 import pytest
-from app.gpu.mcp import MCPError, MCPGPUExecutor
+from app.db import Store
+from app.gpu.mcp import MCPError, MCPGPUExecutor, MCPRateLimited
+from app.gpu.repository import Repository
 
 TOKEN = "access-token"
 RUNTIME = {"runtime_name": "runtimes/runtime-1", "runtime_id": "runtime-1", "owner_id": "owner-1"}
@@ -172,6 +176,65 @@ def test_repeated_start_script_is_marker_idempotent_not_restart():
     assert first["execution_id"] == second["execution_id"]
     assert all("O_EXCL" in script and "Popen" in script for script in scripts)
     assert all("if _marker.exists()" in script for script in scripts)
+
+
+@pytest.mark.parametrize("header,wait", [("120", 120), ("0", 0), ("bad value", 0), ("http-date", 120)])
+def test_429_respects_retry_after_without_an_inner_retry(monkeypatch, header, wait):
+    calls = []
+    now = 1_790_000_000
+    if header == "http-date":
+        header = formatdate(now + wait, usegmt=True)
+    monkeypatch.setattr(time, "time", lambda: now)
+    monkeypatch.setattr(time, "sleep", lambda delay: pytest.fail(f"unexpected inline retry sleep: {delay}"))
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"Retry-After": header})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        executor = MCPGPUExecutor(object(), "owner-1", google=Google(), client=client)
+        with pytest.raises(MCPRateLimited) as failure:
+            executor.poll(RUNTIME, _job())
+    assert failure.value.retry_after == wait
+    assert len(calls) == 1
+
+
+def test_mcp_session_survives_restart_and_is_recreated_once_after_expiry():
+    repo = Repository(Store("sqlite://"))
+    handle = {**RUNTIME, "job_id": "job-1"}
+    lease = repo.create("leases", "owner-1", {"runtime_id": "runtime-1", "owner_job_id": "job-1"})
+    calls = []
+    sessions = []
+    expired = set()
+
+    def handler(request):
+        body = json.loads(request.content)
+        name = body["params"]["name"]
+        arguments = body["params"]["arguments"]
+        calls.append(name)
+        if name == "create_session":
+            sessions.append(f"runtimes/runtime-1/sessions/test-{len(sessions)}")
+            result = {"session": sessions[-1]}
+        elif arguments["session"] in expired:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                           "error": {"code": -32000, "message": "Session not found"}})
+        else:
+            result = _text_result({"state": "running"})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        def poll():
+            executor = MCPGPUExecutor(repo, "owner-1", google=Google(), client=client)
+            assert executor.poll(handle, _job())["state"] == "running"
+
+        poll()
+        poll()
+        assert calls == ["create_session", "execute_code", "execute_code"]
+        expired.add(sessions[0])
+        poll()
+        poll()
+    assert calls[3:] == ["execute_code", "create_session", "execute_code", "execute_code"]
+    assert repo.get("leases", lease["id"], "owner-1")["mcp_session"] == sessions[-1]
 
 
 @pytest.mark.parametrize('message,transient', [('temporarily unavailable',True),('deadline exceeded',True),('permission denied',False),('invalid params',False)])

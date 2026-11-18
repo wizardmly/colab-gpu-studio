@@ -11,9 +11,12 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import uuid
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -43,6 +46,30 @@ class MCPTransient(MCPError):
     """Colab answered "unavailable"; every call made here is idempotent, so it is retried."""
 
 
+class MCPRateLimited(MCPTransient):
+    def __init__(self, message: str, headers: Any = None):
+        super().__init__(message)
+        self.retry_after = 0
+        value = (headers or {}).get("retry-after", "").strip()
+        try:
+            if re.fullmatch(r"[0-9]+", value):
+                seconds = float(value)
+            else:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                seconds = retry_at.timestamp() - time.time()
+            if math.isfinite(seconds):
+                self.retry_after = max(0, math.ceil(seconds))
+        except (ValueError, OverflowError, TypeError, OSError):
+            pass
+
+
+class MCPSessionMissing(MCPError):
+    """The remote session must be recreated on its existing runtime."""
+
+
+_SESSION_MISSING = re.compile(r"session[^\n]{0,100}(?:not found|does not exist|expired)", re.I)
 _TRANSIENT = re.compile(r"unavailable|\b503\b|deadline|timed? ?out|temporar", re.I)
 _SECRET = re.compile(r"(ya29\.[\w.-]+|Bearer\s+\S+|[A-Za-z0-9_-]{40,})")
 
@@ -308,7 +335,12 @@ class MCPGPUExecutor:
                 time.sleep(2 * (attempt + 1))
             except httpx.HTTPError as exc:
                 raise MCPError(f"Colab MCP网络请求失败（{type(exc).__name__}）") from exc
-        if response.status_code in {408, 429, 500, 502, 503, 504}:
+        tool = params.get("name")
+        if response.status_code == 429:
+            raise MCPRateLimited("Colab MCP 请求限流（HTTP 429）", response.headers)
+        if response.status_code == 404 and tool == "execute_code":
+            raise MCPSessionMissing("Colab MCP 会话不可用")
+        if response.status_code in {408, 500, 502, 503, 504}:
             raise MCPTransient(f'Colab MCP temporarily unavailable (HTTP {response.status_code})')
         if response.status_code < 200 or response.status_code >= 300:
             raise MCPError(f"Colab MCP请求失败（HTTP {response.status_code}）")
@@ -319,10 +351,14 @@ class MCPGPUExecutor:
             error = envelope['error']
             message = error.get('message', '') if isinstance(error, dict) else ''
             code = error.get('code') if isinstance(error, dict) else None
+            if type(code) is int and code == 429:
+                raise MCPRateLimited("Colab MCP 请求限流（RPC 429）", response.headers)
             # Protocol/authorization failures are permanent, even if text happens
             # to contain a transient phrase. Never echo upstream messages.
             if code not in (-32700, -32600, -32601, -32602, 401, 403) and isinstance(message, str):
                 permanent = re.search(r'permission|unauthori|forbidden|invalid|denied', message, re.I)
+                if not permanent and tool == "execute_code" and (code == 404 or _SESSION_MISSING.search(message)):
+                    raise MCPSessionMissing("Colab MCP 会话不可用")
                 if not permanent and _TRANSIENT.search(message):
                     raise MCPTransient('Colab MCP temporary RPC failure')
             raise MCPError("Colab MCP工具调用失败")
@@ -362,6 +398,8 @@ class MCPGPUExecutor:
             raise MCPError("Colab MCP工具返回无效结构")
         if result.get("isError") or result.get("executionError"):
             detail = _error_detail(result)
+            if result.get("isError") and not result.get("executionError") and _SESSION_MISSING.search(detail):
+                raise MCPSessionMissing("Colab MCP 会话不可用")
             log.warning("Colab executor error: %s", detail)  # restricted backend log only
             name = (result.get("executionError") or {}).get("name") if isinstance(result.get("executionError"), dict) else None
             error = MCPTransient if _TRANSIENT.search(detail) else MCPError
@@ -400,12 +438,14 @@ class MCPGPUExecutor:
         for attempt in range(_NETWORK_ATTEMPTS):
             try:
                 return self._tool_value(self._rpc("tools/call", {"name": name, "arguments": arguments}))
+            except MCPRateLimited:
+                raise  # The scheduler owns the cooldown, including Retry-After.
             except MCPTransient:
                 if attempt == _NETWORK_ATTEMPTS - 1:
                     raise
                 time.sleep(3 * (attempt + 1))
 
-    def _tunnel_lease(self, handle: dict) -> dict | None:
+    def _runtime_lease(self, handle: dict) -> dict | None:
         if not isinstance(handle, dict) or handle.get("owner_id") != self.owner_id:
             return None
         runtime_id = handle.get("runtime_id")
@@ -422,8 +462,9 @@ class MCPGPUExecutor:
                 continue
             if job_id and lease.get("owner_job_id") != job_id:
                 continue
-            if lease.get("tunnel_endpoint"):
-                return lease
+            if self.account_id is not None and lease.get("account_id") not in (None, self.account_id):
+                continue
+            return lease
         return None
 
     @staticmethod
@@ -501,12 +542,16 @@ class MCPGPUExecutor:
                 if r.status_code == 404:
                     kernel_id = None
                 elif r.status_code >= 400:
+                    if r.status_code == 429:
+                        raise MCPRateLimited("Colab Kernel 状态查询限流（HTTP 429）", r.headers)
                     if r.status_code in (401, 403):
                         self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
                     raise MCPTransient(f"Colab kernel inspect HTTP {r.status_code}")
             if not kernel_id:
                 rk = self.client.get(f"{proxy_url}/api/kernels", headers=headers, params=auth_params)
                 if rk.status_code >= 400:
+                    if rk.status_code == 429:
+                        raise MCPRateLimited("Colab Kernel 列表查询限流（HTTP 429）", rk.headers)
                     if rk.status_code in (401, 403):
                         self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
                     raise MCPTransient(f"Colab kernel list HTTP {rk.status_code}")
@@ -518,6 +563,8 @@ class MCPGPUExecutor:
                         f"{proxy_url}/api/kernels", json={"name": "python3"}, headers=headers, params=auth_params
                     )
                     if rc.status_code >= 400:
+                        if rc.status_code == 429:
+                            raise MCPRateLimited("Colab Kernel 启动限流（HTTP 429）", rc.headers)
                         if rc.status_code in (401, 403):
                             self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
                         raise MCPTransient(f"Colab kernel start HTTP {rc.status_code}")
@@ -608,6 +655,8 @@ class MCPGPUExecutor:
             if isinstance(exc, (MCPError, MCPTransient)):
                 raise
             status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 429:
+                raise MCPRateLimited("Colab 隧道连接限流（HTTP 429）", exc.response.headers) from exc
             if type(status) is int:
                 if status in (401, 403):
                     self.store.update("leases", lease["id"], {"proxy_token_expires_at": 1}, self.owner_id)
@@ -616,6 +665,15 @@ class MCPGPUExecutor:
         if error_info is not None:
             return {"isError": True, "executionError": error_info, "stdout": "".join(stdout_parts)}
         return {"stdout": "".join(stdout_parts)}
+
+    @staticmethod
+    def _cached_session(lease: dict, parent: str, job_id: str) -> str | None:
+        session = lease.get("mcp_session")
+        if (lease.get("owner_job_id") == job_id == lease.get("mcp_session_job_id")
+                and isinstance(session, str)
+                and re.fullmatch(re.escape(parent) + r"/sessions/[a-z][a-z0-9-]{0,62}", session)):
+            return session
+        return None
 
     def _session(self, handle: dict, job_id: str) -> str:
         if not isinstance(handle, dict) or handle.get("owner_id") != self.owner_id:
@@ -626,8 +684,14 @@ class MCPGPUExecutor:
         if not isinstance(job_id, str) or not _SAFE_ID.fullmatch(job_id):
             raise MCPError("job id不适合作为稳定MCP sessionId")
         session_id = "studio-" + hashlib.sha256(job_id.encode()).hexdigest()[:32]
-        if self._tunnel_lease(handle) is not None:
+        lease = self._runtime_lease(handle)
+        if lease and lease.get("tunnel_endpoint"):
             return f"{parent}/sessions/{session_id}"
+        session_pattern = re.escape(parent) + r"/sessions/[a-z][a-z0-9-]{0,62}"
+        if lease:
+            cached = self._cached_session(lease, parent, job_id)
+            if cached:
+                return cached
         result = self._tool("create_session", {"parent": parent, "sessionId": session_id})
         session = next(
             (
@@ -639,8 +703,10 @@ class MCPGPUExecutor:
             ),
             None,
         )
-        if not session or not re.fullmatch(re.escape(parent) + r"/sessions/[a-z][a-z0-9-]{0,62}", session):
+        if not session or not re.fullmatch(session_pattern, session):
             raise MCPError("Colab MCP create_session未返回合法完整session资源名")
+        if lease and lease.get("owner_job_id") == job_id:
+            self.store.update("leases", lease["id"], {"mcp_session": session, "mcp_session_job_id": job_id}, self.owner_id)
         return session
 
     @staticmethod
@@ -671,16 +737,31 @@ class MCPGPUExecutor:
         return payload
 
     def _exec_code_on_handle(self, handle: dict, session: str, execution_id: str, code: str) -> Any:
-        tunnel_lease = self._tunnel_lease(handle)
-        if tunnel_lease is not None:
+        lease = self._runtime_lease(handle)
+        if lease and lease.get("tunnel_endpoint"):
             for attempt in range(_NETWORK_ATTEMPTS):
                 try:
-                    return self._tool_value(self._execute_tunnel_code(tunnel_lease, code))
+                    return self._tool_value(self._execute_tunnel_code(lease, code))
+                except MCPRateLimited:
+                    raise
                 except MCPTransient:
                     if attempt == _NETWORK_ATTEMPTS - 1:
                         raise
                     time.sleep(2 * (attempt + 1))
-        return self._tool("execute_code", {"session": session, "executionId": execution_id, "code": code})
+        job_id = handle.get("owner_job_id") or handle.get("job_id")
+        if lease and job_id:
+            # An earlier chunk in this poll may have refreshed the session.
+            session = self._cached_session(lease, handle["runtime_name"], job_id) or session
+        arguments = {"session": session, "executionId": execution_id, "code": code}
+        try:
+            return self._tool("execute_code", arguments)
+        except MCPSessionMissing:
+            if not lease or not job_id or lease.get("owner_job_id") != job_id:
+                raise
+            # Discard the stale session even if recreation has to wait due to a 429.
+            self.store.update("leases", lease["id"], {"mcp_session": None}, self.owner_id)
+            arguments["session"] = self._session(handle, job_id)
+            return self._tool("execute_code", arguments)
 
     def start(self, handle: dict, job: dict, execution_id: str) -> dict:
         execution_id = _uuid4(execution_id)

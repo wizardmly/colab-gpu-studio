@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -18,11 +19,12 @@ from .compute import (
     DisabledProvider,
     GpuConfig,
     ProviderUnavailable,
+    _job_account_id,
     default_executor_factory,
     default_provider_factory,
 )
 from .google import GoogleError
-from .mcp import MCPError
+from .mcp import MCPError, MCPGPUExecutor, MCPRateLimited, MCPTransient
 from .newgpu.executor_plugins import TrustedExecutorAdapter
 from .prep import PREP_SPEC_KEY, cache_key, create_prep_job, prep_idempotency_key, prep_jobs_for
 from .runtime_logs import public_runtime_logs, runtime_log_text
@@ -41,6 +43,9 @@ ACTIVE_STATES = {
     "cleanup_pending",
 }
 MAX_OUTPUT_BYTES = 100 * 1024 * 1024
+MCP_POLL_INTERVAL = 10
+MCP_MIN_COOLDOWN = 30
+MCP_MAX_COOLDOWN = 300
 
 
 # Stage markers written by runtime_worker.py into status.json while a job is running.
@@ -988,6 +993,8 @@ class Scheduler:
         return job
 
     def _load(self, job: dict) -> dict:
+        if float(job.get("poll_retry_at") or 0) > self.clock():
+            return job
         lease = self._lease(job)
         if not lease:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
@@ -1004,6 +1011,10 @@ class Scheduler:
             return self._begin_failure(job, "gpu_execution_prepare_failed", f"Execution registration refused: {exc}")
         execution_id = job["execution_id"]
         try:
+            executor = self._executor(job)
+            waiting = self._wait_for_mcp_cooldown(job, executor)
+            if waiting is not None:
+                return waiting
             # The Drive token is attached to an in-memory copy only; it is never persisted.
             executor_job = {
                 **job,
@@ -1012,15 +1023,20 @@ class Scheduler:
                 if job.get("deadline_epoch") is not None
                 else lease.get("deadline_epoch"),
             }
-            result = self._executor(job).start(
+            result = executor.start(
                 self._lease_handle(lease), executor_job, execution_id
             )
+        except MCPRateLimited as exc:
+            return self._defer_rate_limited_job(job, exc)
         except Exception as exc:
             return self._begin_failure(job, "gpu_start_failed", self._safe_error(exc))
         if isinstance(result, dict) and result.get("execution_id") not in {None, execution_id}:
             return self._begin_failure(job, "gpu_execution_id_mismatch", "executor changed execution ID")
         job = self._mark_instance("job_busy", job)
-        return self._set_state(job, "running", "GPU execution started")
+        return self._set_state(
+            job, "running", "GPU execution started", poll_retry_at=0, poll_last_error=None,
+            mcp_rate_limited=False,
+        )
 
     def _note_restored(self, job: dict, lease: dict, timings: dict) -> dict:
         """Remember on the lease which environment the runtime now has, and whether this job reused it."""
@@ -1047,23 +1063,54 @@ class Scheduler:
             logging.getLogger(__name__).warning("model cache unavailable: %s", self._safe_error(exc))
             return None
 
+    def _wait_for_mcp_cooldown(self, job: dict, executor: Any) -> dict | None:
+        if not isinstance(executor, MCPGPUExecutor):
+            return None
+        retry_at = self.store.mcp_cooldown_until(job["owner_id"], _job_account_id(job))
+        if retry_at <= self.clock():
+            return None
+        return self._update("jobs", job["id"], {
+            "poll_retry_at": retry_at, "mcp_rate_limited": True,
+            "poll_last_error": "此 Google 账号的 Colab 请求处于限流冷却期",
+        }, job["owner_id"])
+
+    def _defer_rate_limited_job(self, job: dict, exc: MCPRateLimited) -> dict:
+        previous_interval = job.get("mcp_poll_interval") or MCP_POLL_INTERVAL
+        interval = min(MCP_MAX_COOLDOWN, max(MCP_MIN_COOLDOWN, 2 * previous_interval))
+        # The local backoff is capped, but a longer server delay takes precedence.
+        retry_at = self.clock() + max(interval, exc.retry_after)
+        owner = job["owner_id"]
+        account = _job_account_id(job)
+        self.store.extend_mcp_cooldown(owner, account, retry_at)
+        retry_at = self.store.mcp_cooldown_until(owner, account)
+        seconds = max(0, math.ceil(retry_at - self.clock()))
+        reason = runtime_log_text(str(exc))[:500]
+        return self._set_state(
+            job, job["state"], f"{reason}，等待 {seconds} 秒后再试",
+            poll_retry_at=retry_at, poll_last_error=reason, mcp_rate_limited=True, mcp_poll_interval=interval,
+        )
+
     def _run(self, job: dict) -> dict:
-        if float(job.get('poll_retry_at') or 0) > self.clock():
+        if max(float(job.get("poll_retry_at") or 0), float(job.get("poll_next_at") or 0)) > self.clock():
             return job
         lease = self._lease(job)
         if not lease:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
         try:
+            executor = self._executor(job)
+            waiting = self._wait_for_mcp_cooldown(job, executor)
+            if waiting is not None:
+                return waiting
             executor_job = {
                 **job,
                 "deadline_epoch": job.get("deadline_epoch")
                 if job.get("deadline_epoch") is not None
                 else lease.get("deadline_epoch"),
             }
-            result = self._executor(job).poll(self._lease_handle(lease), executor_job)
+            result = executor.poll(self._lease_handle(lease), executor_job)
+        except MCPRateLimited as exc:
+            return self._defer_rate_limited_job(job, exc)
         except Exception as exc:
-            from .mcp import MCPTransient
-
             retries = int(job.get('poll_retry_count') or 0) + 1
             if isinstance(exc, MCPTransient) and retries <= 5:
                 delay = min(2**retries, 30)
@@ -1071,12 +1118,13 @@ class Scheduler:
                 return self._set_state(
                     job, 'running', f'GPU 状态查询暂时失败，{delay} 秒后重试（{retries}/5）：{reason}',
                     poll_retry_count=retries, poll_retry_at=self.clock() + delay, poll_last_error=reason,
+                    mcp_rate_limited=False,
                 )
             return self._begin_failure(job, "gpu_poll_failed", self._safe_error(exc))
         if job.get('poll_retry_count') or job.get('poll_retry_at'):
             job = self._set_state(
                 job, 'running', 'GPU 状态查询已恢复',
-                poll_retry_count=0, poll_retry_at=0, poll_last_error=None,
+                poll_retry_count=0, poll_retry_at=0, poll_last_error=None, mcp_rate_limited=False,
             )
         if result.get('execution_id') not in {None,job.get('execution_id')}:
             return self._begin_failure(job,'gpu_execution_id_mismatch','poll execution identity mismatch')
@@ -1090,6 +1138,11 @@ class Scheduler:
         if state == "completed":
             job = self._note_restored(job, lease, timings or {})
         if state == "running":
+            if isinstance(executor, MCPGPUExecutor):
+                interval = max(MCP_POLL_INTERVAL, (job.get("mcp_poll_interval") or MCP_POLL_INTERVAL) - 5)
+                job = self._update("jobs", job["id"], {
+                    "poll_next_at": self.clock() + interval, "mcp_poll_interval": interval,
+                }, job["owner_id"])
             stage = result.get("stage")
             if stage in _STAGE_TEXT and stage != job.get("stage"):
                 updated = self._update(
@@ -1644,6 +1697,12 @@ class Scheduler:
                 continue
             until = float(job.get("claim_until") or 0)
             if job.get("claim_token") and until > now:
+                continue
+            if (
+                job.get("state") in {"loading", "running"}
+                and max(float(job.get("poll_retry_at") or 0), float(job.get("poll_next_at") or 0)) > now
+                and not job.get("cancel_requested") and not self._expired(job)
+            ):
                 continue
             token = uuid.uuid4().hex
             claimed = self._update(

@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Mapping
 
 from sqlalchemy import String, UniqueConstraint, inspect, select, text, update
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -1181,6 +1183,29 @@ class Repository:
             session.refresh(job)
             return self._row(job)
 
+    @staticmethod
+    def _mcp_cooldown_id(owner_id: str, account_id: str | None) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, digest(["colab-mcp-cooldown", owner_id, account_id])))
+
+    def mcp_cooldown_until(self, owner_id: str, account_id: str | None) -> float:
+        row = self.get("operations", self._mcp_cooldown_id(owner_id, account_id), owner_id)
+        return float(row["retry_at"]) if row else 0
+
+    def extend_mcp_cooldown(self, owner_id: str, account_id: str | None, retry_at: float) -> None:
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            insert = postgres_insert if self.store.engine.dialect.name == "postgresql" else sqlite_insert
+            now = utcnow()
+            row = GpuOperationRow.__table__
+            statement = insert(row).values(
+                id=self._mcp_cooldown_id(owner_id, account_id), owner_id=owner_id, account_id=account_id,
+                state="mcp_cooldown", data={"retry_at": retry_at}, created_at=now, updated_at=now, version=0,
+            )
+            session.execute(statement.on_conflict_do_update(
+                index_elements=[row.c.id],
+                set_={"data": statement.excluded.data, "updated_at": now, "version": row.c.version + 1},
+                where=row.c.data["retry_at"].as_float() < retry_at,
+            ))
+
     def retry_attempt(self, job_id, owner_id, key):
         """Requeue a cleaned failed Mock job; immutable snapshot and executions survive."""
         if not key or len(key)>200:
@@ -1216,7 +1241,7 @@ class Repository:
                 'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at',
                 'poll_last_error','runtime_logs',
                 'gpu_reported','gpu_diagnostics',
-                'archived_at',
+                'archived_at','poll_next_at','mcp_poll_interval','mcp_rate_limited',
             }
             for k in transient:
                 data.pop(k,None)
@@ -1272,7 +1297,7 @@ class Repository:
                 "requested_instance_id", "account_alias_snapshot", "selection_reason", "allocation_key",
                 "attempt_id", "runtime_id", "request_id", "stage", "worker_timings", "output_bytes",
                 "started_at", "finished_at", "poll_retry_count", "poll_retry_at", "gpu_reported", "gpu_diagnostics",
-                "poll_last_error", "runtime_logs",
+                "poll_last_error", "runtime_logs", "poll_next_at", "mcp_poll_interval", "mcp_rate_limited",
             }
             for k in transient:
                 data.pop(k, None)

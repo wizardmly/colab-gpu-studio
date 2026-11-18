@@ -1,6 +1,6 @@
 
 from app.db import Store
-from app.gpu.mcp import MCPError, MCPTransient
+from app.gpu.mcp import MCPError, MCPGPUExecutor, MCPRateLimited, MCPTransient
 from app.gpu.repository import Repository
 from app.gpu.scheduler import Scheduler
 
@@ -57,3 +57,105 @@ def test_new_attempt_drops_previous_poll_backoff_but_keeps_history():
     retried=repo.retry_attempt(job['id'],'owner','new-attempt')
     assert 'poll_retry_at' not in retried and 'poll_retry_count' not in retried
     assert retried['attempt_history'][0]['poll_retry_count']==5
+
+
+def test_429_cooldown_survives_restart_and_applies_to_the_same_account():
+    repo = Repository(Store("sqlite://"))
+    clock = [100.0]
+    calls = []
+    outcomes = [MCPRateLimited("HTTP 429", {"retry-after": "120"}), None, None, MCPRateLimited("HTTP 429")]
+
+    class Executor(MCPGPUExecutor):
+        def __init__(self):
+            pass
+
+        def poll(self, handle, job):
+            calls.append(job["id"])
+            outcome = outcomes.pop(0)
+            if outcome:
+                raise outcome
+            return {"state": "running", "execution_id": job["execution_id"]}
+
+    def running_job(account, owner="owner"):
+        job = repo.create("jobs", owner, {"state": "running", "provider": "colab", "execution_id": "execution",
+                                         "account_id": account, "deadline_epoch": 1000})
+        repo.create("leases", owner, {"owner_job_id": job["id"], "state": "active", "handle": {}})
+        return job
+
+    def scheduler():
+        return Scheduler(repo, executor_factory=lambda _: Executor(), clock=lambda: clock[0])
+
+    first = running_job("account-a")
+    same = running_job("account-a")
+    other = running_job("account-b")
+    limited = scheduler()._run(first)
+    assert limited["state"] == "running" and limited["poll_retry_at"] == 220
+    assert limited["execution_id"] == first["execution_id"]
+    repo.extend_mcp_cooldown("owner", "account-a", 160)
+    assert repo.mcp_cooldown_until("owner", "account-a") == 220
+    assert repo.mcp_cooldown_until("different-owner", "account-a") == 0
+
+    restarted = scheduler()
+    assert restarted._run(limited) == limited
+    assert restarted._run(same)["poll_retry_at"] == 220
+    assert restarted._run(other)["poll_next_at"] == 110
+    assert calls == [first["id"], other["id"]]
+
+    clock[0] = 220
+    recovered = restarted._run(limited)
+    assert not recovered["mcp_rate_limited"] and recovered["poll_next_at"] == 245
+    assert restarted._run(recovered) == recovered
+    clock[0] = 245
+    next_limit = restarted._run(recovered)
+    assert next_limit["poll_retry_at"] == 295
+    assert calls == [first["id"], other["id"], first["id"], first["id"]]
+
+
+def test_cooldown_does_not_block_other_jobs_or_cancellation():
+    repo, job, scheduler, _, _ = setup_job(MCPRateLimited("HTTP 429"))
+    limited = scheduler._run(job)
+    queued = repo.create("jobs", "owner", {"state": "queued"})
+    assert scheduler.tick()["job_id"] == queued["id"]
+    assert repo.get("jobs", queued["id"], "owner")["state"] == "validating"
+    assert limited["state"] == "running"
+    scheduler.cancel("owner", job["id"])
+    assert scheduler.tick()["job_id"] == job["id"]
+    assert repo.get("jobs", job["id"], "owner")["state"] != "running"
+
+
+def test_start_retries_after_429_with_the_same_execution_id():
+    repo = Repository(Store("sqlite://"))
+    clock = [100.0]
+    execution_ids = []
+    job = repo.create("jobs", "owner", {"state": "loading", "provider": "colab", "account_id": "account-a",
+                                      "deadline_epoch": 1000})
+    lease = repo.create("leases", "owner", {"owner_job_id": job["id"], "state": "active", "handle": {}})
+    job = repo.update("jobs", job["id"], {"lease_id": lease["id"]}, "owner")
+
+    class Executor:
+        def start(self, handle, job, execution_id):
+            execution_ids.append(execution_id)
+            if len(execution_ids) == 1:
+                raise MCPRateLimited("HTTP 429")
+            return {"execution_id": execution_id}
+
+    scheduler = Scheduler(repo, executor_factory=lambda _: Executor(), clock=lambda: clock[0])
+    assert scheduler.tick()["state"] == "loading"
+    waiting = repo.get("jobs", job["id"], "owner")
+    assert waiting["poll_retry_at"] == 130
+    assert scheduler.tick()["advanced"] is False
+    assert len(execution_ids) == 1
+    clock[0] = 130
+    assert scheduler.tick()["state"] == "running"
+    assert execution_ids == [waiting["execution_id"]] * 2
+    assert len(repo.list("executions", "owner")) == 1
+
+
+def test_job_deadline_still_triggers_cleanup_during_a_long_retry_after():
+    repo, job, scheduler, executor, clock = setup_job(MCPRateLimited("HTTP 429", {"retry-after": "120"}))
+    job = repo.update("jobs", job["id"], {"deadline_epoch": 110}, "owner")
+    scheduler._run(job)
+    clock[0] = 111
+    assert scheduler.tick()["state"] == "cleaning_up"
+    assert repo.get("jobs", job["id"], "owner")["error_code"] == "gpu_timeout"
+    assert executor.calls == 1

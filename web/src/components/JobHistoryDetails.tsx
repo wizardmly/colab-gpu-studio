@@ -15,6 +15,8 @@ export interface JobHistoryDetailRecord {
   cache_prep?: GpuJob;
   runtime_logs?: RuntimeLogSnapshot;
   poll_retry_count?: number;
+  mcp_rate_limited?: boolean;
+  poll_retry_at?: number;
   poll_last_error?: string | null;
 }
 
@@ -27,6 +29,7 @@ export function JobHistoryDetails({ job, live = false, onOpenJob }: { job: JobHi
   const runtimeLogs = logJob.runtime_logs;
   const runtimeLive = live && !['completed', 'failed', 'cancelled'].includes(String(logJob.state));
   const collectedAt = runtimeLogs?.collected_at ? new Date(runtimeLogs.collected_at * 1000).toLocaleString() : null;
+  const retryAt = logJob.poll_retry_at ? new Date(logJob.poll_retry_at * 1000).toLocaleTimeString() : null;
   return (
     <>
       <p className="muted small">
@@ -43,9 +46,12 @@ export function JobHistoryDetails({ job, live = false, onOpenJob }: { job: JobHi
           </>}
           <p className="muted small">
             {collectedAt ? `最近读取 ${collectedAt}` : live ? '等待运行时日志回传' : '尚无运行日志记录'}
-            {live ? ' · 每 4 秒刷新' : ''}
           </p>
-          {logJob.poll_last_error && <p className="status error" role="status">{runtimeLive ? `状态查询正在重试（${logJob.poll_retry_count || 0}/5）` : '最近状态查询错误'} · {logJob.poll_last_error}</p>}
+          {runtimeLive && logJob.mcp_rate_limited ? (
+            <p className="status" role="status">Colab 请求限流{retryAt ? `，${retryAt} 后再试` : '，正在等待重试'}</p>
+          ) : logJob.poll_last_error && (
+            <p className="status error" role="status">{runtimeLive ? `状态查询正在重试（${logJob.poll_retry_count || 0}/5）` : '最近状态查询错误'} · {logJob.poll_last_error}</p>
+          )}
           {runtimeLogs?.worker && <><h3>模型与环境</h3><pre className={styles.diagnostics} tabIndex={0} aria-label="模型与环境日志">{runtimeLogs.worker}</pre></>}
           {runtimeLogs?.comfyui && <><h3>ComfyUI</h3><pre className={styles.diagnostics} tabIndex={0} aria-label="ComfyUI 日志">{runtimeLogs.comfyui}</pre></>}
           {!runtimeLogs?.worker && !runtimeLogs?.comfyui && <p className="muted small">{awaitingPrep && !cachePrep ? '关联的 CPU 缓存任务记录暂不可用，请稍后刷新。' : logJob.prep ? '模型下载、缓存上传和环境安装输出会显示在这里。' : '模型准备及 ComfyUI 输出会显示在这里。'}</p>}

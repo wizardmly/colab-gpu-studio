@@ -88,6 +88,8 @@ export interface GpuJob {
   cache_prep?: GpuJob;
   runtime_logs?: RuntimeLogSnapshot;
   poll_retry_count?: number;
+  mcp_rate_limited?: boolean;
+  poll_retry_at?: number;
   poll_last_error?: string | null;
   [key: string]: unknown;
 }
